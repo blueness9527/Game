@@ -1,5 +1,6 @@
 import json
 import math
+import queue
 import random
 import string
 import threading
@@ -20,21 +21,19 @@ BALLOON_RADIUS = 28
 TARGET_SCORE = 100
 INITIAL_LIVES = 5
 TICK_MS = 35
-EXPLOSION_DURATION = 14
+EXPLOSION_DURATION = 20
+SMOKE_DURATION = 36
 PROJECTILE_SPEED = 18
 GROUND_HEIGHT = 92
+CANNON_TURN_SPEED = 0.11
+FIRE_PRIORITY_GAP = 0.22
 
 ASSETS_DIR = Path(__file__).with_name("assets")
 MUSIC_FILE = ASSETS_DIR / "be_chillin.mp3"
-SHOT_SOUND_FILE = ASSETS_DIR / "cannon_shot.ogg"
+FIRE_SOUND_FILE = ASSETS_DIR / "cannon_fire.wav"
+TURN_SOUND_FILE = ASSETS_DIR / "turret_turn.wav"
+EXPLOSION_SOUND_FILE = ASSETS_DIR / "shell_explosion.wav"
 SAVE_FILE = Path(__file__).with_name("balloon_typing_save.json")
-
-MUSIC_SOURCE_URL = (
-    "https://github.com/SoundSafari/CC0-1.0-Music/raw/refs/heads/main/freepd.com/Be%20Chillin.mp3"
-)
-SHOT_SOURCE_URL = (
-    "https://raw.githubusercontent.com/lavenderdotpet/CC0-Public-Domain-Sounds/main/100-CC0-SFX/shot_01.ogg"
-)
 
 BG_TOP = "#d7f0ff"
 PANEL_COLOR = "#ffffff"
@@ -63,7 +62,6 @@ class SoundManager:
     def __init__(self) -> None:
         self.enabled = winsound is not None
         self.pattern_sounds = {
-            "pop": [(1200, 40), (900, 30)],
             "wrong": [(280, 120)],
             "start": [(700, 70), (920, 90)],
             "win": [(780, 80), (980, 80), (1280, 120)],
@@ -71,16 +69,15 @@ class SoundManager:
         }
         self.bgm_alias = "balloon_bgm"
         self.music_loaded = False
-        self.effect_index = 0
+        self.effect_queue: queue.Queue[tuple[Path | None, str | None, float]] = queue.Queue()
+        self.effect_thread = threading.Thread(target=self._effect_worker, daemon=True)
+        self.effect_thread.start()
+        self.last_fire_time = 0.0
 
     def play_pattern(self, name: str) -> None:
         if not self.enabled or name not in self.pattern_sounds:
             return
-        threading.Thread(
-            target=self._play_pattern,
-            args=(self.pattern_sounds[name],),
-            daemon=True,
-        ).start()
+        threading.Thread(target=self._play_pattern, args=(self.pattern_sounds[name],), daemon=True).start()
 
     def _play_pattern(self, pattern: list[tuple[int, int]]) -> None:
         for freq, duration in pattern:
@@ -89,13 +86,45 @@ class SoundManager:
             except RuntimeError:
                 return
 
+    def queue_wav(self, file_path: Path, fallback_name: str | None = None, delay: float = 0.0) -> None:
+        self.effect_queue.put((file_path, fallback_name, delay))
+
+    def queue_fire(self, file_path: Path) -> None:
+        self.last_fire_time = time.time()
+        self.queue_wav(file_path, fallback_name="start")
+
+    def queue_explosion(self, file_path: Path) -> None:
+        now = time.time()
+        delay = max(0.0, FIRE_PRIORITY_GAP - (now - self.last_fire_time))
+        self.queue_wav(file_path, fallback_name="lose", delay=delay)
+
+    def _effect_worker(self) -> None:
+        while True:
+            file_path, fallback_name, delay = self.effect_queue.get()
+            if delay > 0:
+                time.sleep(delay)
+            if self.enabled and file_path and file_path.exists():
+                try:
+                    winsound.PlaySound(
+                        str(file_path),
+                        winsound.SND_FILENAME | winsound.SND_SYNC | winsound.SND_NODEFAULT,
+                    )
+                    continue
+                except RuntimeError:
+                    pass
+            if fallback_name:
+                self.play_pattern(fallback_name)
+
     def start_bgm(self, music_file: Path) -> None:
         if not music_file.exists():
             return
         self.stop_bgm()
         path = str(music_file.resolve()).replace("\\", "\\\\")
         if windll.winmm.mciSendStringW(
-            f'open "{path}" type mpegvideo alias {self.bgm_alias}', None, 0, 0
+            f'open "{path}" type mpegvideo alias {self.bgm_alias}',
+            None,
+            0,
+            0,
         ) == 0:
             self.music_loaded = True
             windll.winmm.mciSendStringW(f"play {self.bgm_alias} repeat", None, 0, 0)
@@ -105,36 +134,6 @@ class SoundManager:
             windll.winmm.mciSendStringW(f"stop {self.bgm_alias}", None, 0, 0)
             windll.winmm.mciSendStringW(f"close {self.bgm_alias}", None, 0, 0)
             self.music_loaded = False
-
-    def play_effect_file(self, file_path: Path, fallback_name: str | None = None) -> None:
-        if not file_path.exists():
-            if fallback_name:
-                self.play_pattern(fallback_name)
-            return
-        threading.Thread(
-            target=self._play_effect_file_inner,
-            args=(file_path, fallback_name),
-            daemon=True,
-        ).start()
-
-    def _play_effect_file_inner(self, file_path: Path, fallback_name: str | None) -> None:
-        alias = f"balloon_sfx_{self.effect_index}"
-        self.effect_index += 1
-        path = str(file_path.resolve()).replace("\\", "\\\\")
-        result = windll.winmm.mciSendStringW(
-            f'open "{path}" type mpegvideo alias {alias}',
-            None,
-            0,
-            0,
-        )
-        if result != 0:
-            if fallback_name:
-                self.play_pattern(fallback_name)
-            return
-        windll.winmm.mciSendStringW(f"play {alias}", None, 0, 0)
-        time.sleep(2)
-        windll.winmm.mciSendStringW(f"stop {alias}", None, 0, 0)
-        windll.winmm.mciSendStringW(f"close {alias}", None, 0, 0)
 
 
 class BalloonTypingGame:
@@ -160,10 +159,21 @@ class BalloonTypingGame:
         self.spawn_after_id = None
         self.balloons: list[dict] = []
         self.explosions: list[dict] = []
+        self.smokes: list[dict] = []
         self.projectiles: list[dict] = []
+        self.pending_shots: list[dict] = []
         self.sound = SoundManager()
+
         self.cannon_x = WINDOW_WIDTH // 2
-        self.cannon_y = WINDOW_HEIGHT - GROUND_HEIGHT + 8
+        self.carriage_y = WINDOW_HEIGHT - GROUND_HEIGHT + 22
+        self.pivot_x = self.cannon_x
+        self.pivot_y = self.carriage_y - 46
+        self.cannon_angle = -math.pi / 2
+        self.cannon_target_angle = -math.pi / 2
+        self.cannon_recoil = 0.0
+        self.muzzle_flash_frames = 0
+        self.wheel_spin = 0.0
+        self.turn_sound_cooldown = 0.0
         self.next_balloon_id = 1
 
         self.save_data = self._load_save_data()
@@ -191,7 +201,7 @@ class BalloonTypingGame:
 
         tk.Label(
             outer,
-            text="已修正为炮弹真实命中后才击碎气球，并加入本地存档与排行榜",
+            text="炮管从上部炮座旋转，带机械音、后坐力、烟雾与强化爆炸",
             fg=TEXT_MUTED,
             bg=BG_TOP,
             font=("Microsoft YaHei UI", 10),
@@ -203,27 +213,9 @@ class BalloonTypingGame:
         stats = tk.Frame(top_bar, bg=PANEL_COLOR, padx=12, pady=10)
         stats.pack(side="left", fill="x", expand=True)
 
-        tk.Label(
-            stats,
-            textvariable=self.score_var,
-            fg=TEXT_MAIN,
-            bg=PANEL_COLOR,
-            font=("Microsoft YaHei UI", 12, "bold"),
-        ).pack(side="left", padx=(0, 18))
-        tk.Label(
-            stats,
-            textvariable=self.lives_var,
-            fg=TEXT_MAIN,
-            bg=PANEL_COLOR,
-            font=("Microsoft YaHei UI", 11),
-        ).pack(side="left", padx=(0, 18))
-        tk.Label(
-            stats,
-            textvariable=self.status_var,
-            fg=ACCENT,
-            bg=PANEL_COLOR,
-            font=("Microsoft YaHei UI", 11),
-        ).pack(side="left")
+        tk.Label(stats, textvariable=self.score_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 12, "bold")).pack(side="left", padx=(0, 18))
+        tk.Label(stats, textvariable=self.lives_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11)).pack(side="left", padx=(0, 18))
+        tk.Label(stats, textvariable=self.status_var, fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11)).pack(side="left")
 
         control = tk.Frame(top_bar, bg=BG_TOP)
         control.pack(side="left", padx=(10, 0))
@@ -280,32 +272,14 @@ class BalloonTypingGame:
         side.pack(side="left", padx=(12, 0), fill="y")
         side.pack_propagate(False)
 
-        tk.Label(
-            side,
-            text="排行榜",
-            fg=TEXT_MAIN,
-            bg=PANEL_COLOR,
-            font=("Microsoft YaHei UI", 14, "bold"),
-        ).pack(anchor="w")
-
-        tk.Label(
-            side,
-            textvariable=self.rank_var,
-            justify="left",
-            anchor="nw",
-            fg=TEXT_MAIN,
-            bg=PANEL_COLOR,
-            font=("Consolas", 10),
-        ).pack(anchor="w", fill="both", expand=True, pady=(10, 0))
+        tk.Label(side, text="排行榜", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        tk.Label(side, textvariable=self.rank_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Consolas", 10)).pack(anchor="w", fill="both", expand=True, pady=(10, 0))
 
         help_bar = tk.Frame(outer, bg=BG_TOP, pady=10)
         help_bar.pack(fill="x")
-
-        music_text = "背景音乐：Be Chillin（CC0）" if MUSIC_FILE.exists() else "背景音乐文件缺失"
-        shot_text = "发射音效：shot_01.ogg（CC0）" if SHOT_SOUND_FILE.exists() else "发射音效文件缺失"
         tk.Label(
             help_bar,
-            text=f"操作：直接按字母键开炮，Esc 重开，{music_text}，{shot_text}",
+            text="操作：直接按字母键开炮，Esc 重开，音效策略：发射优先，爆炸短延迟排队播放",
             fg=TEXT_MAIN,
             bg=BG_TOP,
             font=("Microsoft YaHei UI", 10, "bold"),
@@ -380,9 +354,7 @@ class BalloonTypingGame:
             return
         lines = []
         for index, item in enumerate(leaderboard[:8], start=1):
-            lines.append(
-                f"{index:>2}. {item['name'][:8]:<8} {item['score']:>3}  {item['difficulty']}"
-            )
+            lines.append(f"{index:>2}. {item['name'][:8]:<8} {item['score']:>3}  {item['difficulty']}")
         self.rank_var.set("\n".join(lines))
 
     def start_game(self) -> None:
@@ -393,7 +365,7 @@ class BalloonTypingGame:
             self.restart_game()
             return
         self.running = True
-        self.status_var.set(f'游戏进行中 {self.difficulty_var.get()}')
+        self.status_var.set(f"游戏进行中 {self.difficulty_var.get()}")
         self.sound.play_pattern("start")
         self.sound.start_bgm(MUSIC_FILE)
         self.root.focus_force()
@@ -410,8 +382,16 @@ class BalloonTypingGame:
         self.result_saved = False
         self.balloons = []
         self.explosions = []
+        self.smokes = []
         self.projectiles = []
+        self.pending_shots = []
         self.next_balloon_id = 1
+        self.cannon_angle = -math.pi / 2
+        self.cannon_target_angle = -math.pi / 2
+        self.cannon_recoil = 0.0
+        self.muzzle_flash_frames = 0
+        self.wheel_spin = 0.0
+        self.turn_sound_cooldown = 0.0
         self.score_var.set("分数 0")
         self.lives_var.set(f"失误余量 {self.lives}")
         self.status_var.set("选择难度和名字后开始，直接按字母键发射炮弹")
@@ -431,11 +411,8 @@ class BalloonTypingGame:
             None,
         )
         if target is None:
-            already_targeted = any(
-                balloon["letter"] == letter and balloon["targeted"] for balloon in self.balloons
-            )
-            if already_targeted:
-                self.status_var.set(f"字母 {letter.upper()} 正在被炮弹追踪")
+            if any(balloon["letter"] == letter and balloon["targeted"] for balloon in self.balloons):
+                self.status_var.set(f"字母 {letter.upper()} 正在被追踪")
                 return
             self.score -= 1
             self.lives -= 1
@@ -450,17 +427,9 @@ class BalloonTypingGame:
             return
 
         target["targeted"] = True
-        self.projectiles.append(
-            {
-                "x": self.cannon_x,
-                "y": self.cannon_y - 30,
-                "target_id": target["id"],
-                "color": target["color"],
-                "letter": letter,
-            }
-        )
-        self.status_var.set(f"已向字母 {letter.upper()} 发射炮弹")
-        self.sound.play_effect_file(SHOT_SOUND_FILE, fallback_name="start")
+        self.cannon_target_angle = math.atan2(target["y"] - self.pivot_y, target["x"] - self.pivot_x)
+        self.pending_shots.append({"target_id": target["id"], "color": target["color"], "letter": letter})
+        self.status_var.set(f"锁定字母 {letter.upper()}，炮管转向中")
         self._draw_scene()
 
     def _schedule_tick(self) -> None:
@@ -484,7 +453,6 @@ class BalloonTypingGame:
         self.spawn_after_id = None
         if not self.running or self.game_over:
             return
-
         config = self._current_config()
         if len(self.balloons) < config["max_balloons"]:
             x = random.randint(BALLOON_RADIUS + 10, WINDOW_WIDTH - BALLOON_RADIUS - 10)
@@ -492,16 +460,14 @@ class BalloonTypingGame:
             speed = random.uniform(config["speed_min"], config["speed_max"])
             existing_letters = {balloon["letter"] for balloon in self.balloons}
             choices = [ch for ch in string.ascii_lowercase if ch not in existing_letters]
-            letter = random.choice(choices or list(string.ascii_lowercase))
-            color = random.choice(BALLOON_COLORS)
             self.balloons.append(
                 {
                     "id": self.next_balloon_id,
                     "x": x,
                     "y": y,
                     "speed": speed,
-                    "letter": letter,
-                    "color": color,
+                    "letter": random.choice(choices or list(string.ascii_lowercase)),
+                    "color": random.choice(BALLOON_COLORS),
                     "targeted": False,
                 }
             )
@@ -513,9 +479,11 @@ class BalloonTypingGame:
         if not self.running or self.game_over:
             return
 
+        self._update_cannon_motion()
+
         escaped = 0
-        remaining_balloons = []
         escaped_target_ids: set[int] = set()
+        remaining_balloons = []
         for balloon in self.balloons:
             balloon["y"] -= balloon["speed"]
             if balloon["y"] + BALLOON_RADIUS < 0:
@@ -524,11 +492,33 @@ class BalloonTypingGame:
             else:
                 remaining_balloons.append(balloon)
         self.balloons = remaining_balloons
-
         balloon_map = {balloon["id"]: balloon for balloon in self.balloons}
+
+        if self.pending_shots:
+            shot = self.pending_shots[0]
+            target = balloon_map.get(shot["target_id"])
+            if target is None:
+                self.pending_shots.pop(0)
+            elif self._angle_diff(self.cannon_target_angle, self.cannon_angle) < 0.05:
+                muzzle_x, muzzle_y = self._get_cannon_muzzle()
+                self.projectiles.append(
+                    {
+                        "x": muzzle_x,
+                        "y": muzzle_y,
+                        "target_id": target["id"],
+                        "color": shot["color"],
+                        "letter": shot["letter"],
+                    }
+                )
+                self.cannon_recoil = 16.0
+                self.muzzle_flash_frames = 5
+                self.wheel_spin += 0.9
+                self.sound.queue_fire(FIRE_SOUND_FILE)
+                self.status_var.set(f"炮弹已发射，目标 {shot['letter'].upper()}")
+                self.pending_shots.pop(0)
+
         hit_ids: set[int] = set()
         remaining_projectiles = []
-
         for projectile in self.projectiles:
             target = balloon_map.get(projectile["target_id"])
             if target is None:
@@ -538,18 +528,12 @@ class BalloonTypingGame:
             distance = math.hypot(dx, dy)
             if distance <= PROJECTILE_SPEED + BALLOON_RADIUS * 0.35:
                 hit_ids.add(target["id"])
-                self.explosions.append(
-                    {
-                        "x": target["x"],
-                        "y": target["y"],
-                        "color": target["color"],
-                        "frame": 0,
-                    }
-                )
-                self.sound.play_pattern("pop")
+                self.explosions.append({"x": target["x"], "y": target["y"], "color": target["color"], "frame": 0})
+                self.smokes.append({"x": target["x"], "y": target["y"], "frame": 0})
+                self.sound.queue_explosion(EXPLOSION_SOUND_FILE)
                 self.score += 1
                 self.score_var.set(f"分数 {self.score}")
-                self.status_var.set(f'炮弹命中 {projectile["letter"].upper()} 气球')
+                self.status_var.set(f"炮弹命中 {projectile['letter'].upper()} 气球")
                 if self.score >= TARGET_SCORE:
                     self._win_game()
                     return
@@ -561,20 +545,12 @@ class BalloonTypingGame:
 
         if hit_ids:
             self.balloons = [balloon for balloon in self.balloons if balloon["id"] not in hit_ids]
-
         if escaped_target_ids:
-            self.projectiles = [
-                projectile
-                for projectile in self.projectiles
-                if projectile["target_id"] not in escaped_target_ids
-            ]
+            self.projectiles = [p for p in self.projectiles if p["target_id"] not in escaped_target_ids]
+            self.pending_shots = [p for p in self.pending_shots if p["target_id"] not in escaped_target_ids]
 
-        next_explosions = []
-        for explosion in self.explosions:
-            explosion["frame"] += 1
-            if explosion["frame"] <= EXPLOSION_DURATION:
-                next_explosions.append(explosion)
-        self.explosions = next_explosions
+        self.explosions = [self._advance_frame(item, EXPLOSION_DURATION) for item in self.explosions if item["frame"] < EXPLOSION_DURATION]
+        self.smokes = [self._advance_frame(item, SMOKE_DURATION) for item in self.smokes if item["frame"] < SMOKE_DURATION]
 
         if escaped:
             self.lives -= escaped
@@ -586,6 +562,44 @@ class BalloonTypingGame:
 
         self._draw_scene()
         self._schedule_tick()
+
+    def _advance_frame(self, item: dict, max_frames: int) -> dict:
+        item["frame"] += 1
+        return item
+
+    def _update_cannon_motion(self) -> None:
+        diff = self._normalize_angle(self.cannon_target_angle - self.cannon_angle)
+        moved = False
+        if abs(diff) > CANNON_TURN_SPEED:
+            self.cannon_angle += CANNON_TURN_SPEED if diff > 0 else -CANNON_TURN_SPEED
+            moved = True
+        else:
+            if abs(diff) > 0.01:
+                moved = True
+            self.cannon_angle = self.cannon_target_angle
+        self.cannon_angle = self._normalize_angle(self.cannon_angle)
+
+        if moved and self.turn_sound_cooldown <= 0:
+            self.sound.queue_wav(TURN_SOUND_FILE, fallback_name=None)
+            self.turn_sound_cooldown = 0.18
+        self.turn_sound_cooldown = max(0.0, self.turn_sound_cooldown - TICK_MS / 1000)
+
+        self.cannon_recoil *= 0.72
+        if self.cannon_recoil < 0.25:
+            self.cannon_recoil = 0.0
+        if self.muzzle_flash_frames > 0:
+            self.muzzle_flash_frames -= 1
+        self.wheel_spin *= 0.9
+
+    def _normalize_angle(self, angle: float) -> float:
+        while angle > math.pi:
+            angle -= 2 * math.pi
+        while angle < -math.pi:
+            angle += 2 * math.pi
+        return angle
+
+    def _angle_diff(self, target: float, current: float) -> float:
+        return abs(self._normalize_angle(target - current))
 
     def _win_game(self) -> None:
         self.running = False
@@ -614,6 +628,7 @@ class BalloonTypingGame:
         self._draw_background()
         self._draw_clouds()
         self._draw_ground()
+        self._draw_smokes()
         self._draw_balloons()
         self._draw_projectiles()
         self._draw_explosions()
@@ -626,139 +641,175 @@ class BalloonTypingGame:
             r = int(215 * (1 - ratio) + 254 * ratio)
             g = int(240 * (1 - ratio) + 243 * ratio)
             b = int(255 * (1 - ratio) + 199 * ratio)
-            color = f"#{r:02x}{g:02x}{b:02x}"
-            self.canvas.create_rectangle(0, y, WINDOW_WIDTH, y + 8, fill=color, outline="")
+            self.canvas.create_rectangle(0, y, WINDOW_WIDTH, y + 8, fill=f"#{r:02x}{g:02x}{b:02x}", outline="")
 
     def _draw_clouds(self) -> None:
-        clouds = [(120, 80), (350, 140), (640, 90), (780, 170)]
-        for x, y in clouds:
+        for x, y in [(120, 80), (350, 140), (640, 90), (780, 170)]:
             self.canvas.create_oval(x, y, x + 70, y + 42, fill="#ffffff", outline="")
             self.canvas.create_oval(x + 25, y - 16, x + 95, y + 34, fill="#ffffff", outline="")
             self.canvas.create_oval(x + 55, y, x + 125, y + 42, fill="#ffffff", outline="")
 
     def _draw_ground(self) -> None:
-        self.canvas.create_rectangle(
-            0,
-            WINDOW_HEIGHT - GROUND_HEIGHT,
-            WINDOW_WIDTH,
-            WINDOW_HEIGHT,
-            fill="#86efac",
-            outline="",
-        )
-        self.canvas.create_text(
-            120,
-            WINDOW_HEIGHT - 34,
-            text=f"当前难度 {self.difficulty_var.get()}",
-            fill="#166534",
-            font=("Microsoft YaHei UI", 12, "bold"),
-        )
-        self.canvas.create_text(
-            WINDOW_WIDTH - 120,
-            WINDOW_HEIGHT - 34,
-            text=f"目标 {TARGET_SCORE} 分",
-            fill="#166534",
-            font=("Microsoft YaHei UI", 12, "bold"),
-        )
+        self.canvas.create_rectangle(0, WINDOW_HEIGHT - GROUND_HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, fill="#86efac", outline="")
+        self.canvas.create_text(120, WINDOW_HEIGHT - 34, text=f"当前难度 {self.difficulty_var.get()}", fill="#166534", font=("Microsoft YaHei UI", 12, "bold"))
+        self.canvas.create_text(WINDOW_WIDTH - 120, WINDOW_HEIGHT - 34, text=f"目标 {TARGET_SCORE} 分", fill="#166534", font=("Microsoft YaHei UI", 12, "bold"))
 
     def _draw_balloons(self) -> None:
         for balloon in self.balloons:
             x = balloon["x"]
             y = balloon["y"]
-            color = balloon["color"]
             outline = "#f8fafc" if not balloon["targeted"] else "#0f172a"
             width = 2 if not balloon["targeted"] else 4
-            self.canvas.create_oval(
-                x - BALLOON_RADIUS,
-                y - BALLOON_RADIUS,
-                x + BALLOON_RADIUS,
-                y + BALLOON_RADIUS + 12,
-                fill=color,
-                outline=outline,
-                width=width,
-            )
-            self.canvas.create_line(
-                x,
-                y + BALLOON_RADIUS + 10,
-                x - 8,
-                y + BALLOON_RADIUS + 42,
-                fill="#6b7280",
-                width=2,
-            )
-            self.canvas.create_text(
-                x,
-                y + 2,
-                text=balloon["letter"].upper(),
-                fill="white",
-                font=("Consolas", 20, "bold"),
-            )
+            self.canvas.create_oval(x - BALLOON_RADIUS, y - BALLOON_RADIUS, x + BALLOON_RADIUS, y + BALLOON_RADIUS + 12, fill=balloon["color"], outline=outline, width=width)
+            self.canvas.create_line(x, y + BALLOON_RADIUS + 10, x - 8, y + BALLOON_RADIUS + 42, fill="#6b7280", width=2)
+            self.canvas.create_text(x, y + 2, text=balloon["letter"].upper(), fill="white", font=("Consolas", 20, "bold"))
 
     def _draw_cannon(self) -> None:
-        base_y = WINDOW_HEIGHT - GROUND_HEIGHT + 16
-        self.canvas.create_oval(
-            self.cannon_x - 42,
-            base_y + 18,
-            self.cannon_x + 42,
-            base_y + 72,
-            fill="#334155",
-            outline="",
-        )
-        self.canvas.create_rectangle(
-            self.cannon_x - 18,
-            base_y - 8,
-            self.cannon_x + 18,
-            base_y + 40,
+        pivot_x, pivot_y = self._get_cannon_pivot()
+        dir_x = math.cos(self.cannon_angle)
+        dir_y = math.sin(self.cannon_angle)
+        perp_x = -dir_y
+        perp_y = dir_x
+        barrel_length = 90
+        barrel_half_width = 17
+
+        rear_left = (pivot_x - perp_x * barrel_half_width, pivot_y - perp_y * barrel_half_width)
+        rear_right = (pivot_x + perp_x * barrel_half_width, pivot_y + perp_y * barrel_half_width)
+        front_center = (pivot_x + dir_x * barrel_length, pivot_y + dir_y * barrel_length)
+        front_left = (front_center[0] - perp_x * 13, front_center[1] - perp_y * 13)
+        front_right = (front_center[0] + perp_x * 13, front_center[1] + perp_y * 13)
+
+        self.canvas.create_oval(self.cannon_x - 84, self.carriage_y + 26, self.cannon_x + 84, self.carriage_y + 76, fill="#000000", outline="", stipple="gray25")
+        self._draw_wheel(self.cannon_x - 54, self.carriage_y + 26, 28)
+        self._draw_wheel(self.cannon_x + 54, self.carriage_y + 26, 28)
+
+        self.canvas.create_polygon(
+            self.cannon_x - 46, self.carriage_y + 18,
+            self.cannon_x + 46, self.carriage_y + 18,
+            self.cannon_x + 26, self.carriage_y - 8,
+            self.cannon_x - 26, self.carriage_y - 8,
             fill="#475569",
             outline="",
         )
+        self.canvas.create_rectangle(self.cannon_x - 26, self.carriage_y - 20, self.cannon_x + 26, self.carriage_y + 10, fill="#64748b", outline="")
+
         self.canvas.create_polygon(
-            self.cannon_x - 16,
-            base_y - 4,
-            self.cannon_x + 16,
-            base_y - 4,
-            self.cannon_x + 26,
-            base_y - 60,
-            self.cannon_x - 26,
-            base_y - 60,
-            fill="#1e293b",
-            outline="",
+            rear_left[0] + 7, rear_left[1] + 10,
+            rear_right[0] + 7, rear_right[1] + 10,
+            front_right[0] + 7, front_right[1] + 10,
+            front_left[0] + 7, front_left[1] + 10,
+            fill="#0f172a", outline="", stipple="gray50"
         )
-        self.canvas.create_oval(
-            self.cannon_x - 8,
-            base_y - 54,
-            self.cannon_x + 8,
-            base_y - 38,
-            fill="#94a3b8",
-            outline="",
+        self.canvas.create_polygon(
+            rear_left[0], rear_left[1],
+            rear_right[0], rear_right[1],
+            front_right[0], front_right[1],
+            front_left[0], front_left[1],
+            fill="#334155", outline=""
         )
+        self.canvas.create_polygon(
+            rear_left[0] - dir_x * 8 + perp_x * 4, rear_left[1] - dir_y * 8 + perp_y * 4,
+            rear_right[0] - dir_x * 8 + perp_x * 4, rear_right[1] - dir_y * 8 + perp_y * 4,
+            rear_right[0], rear_right[1],
+            rear_left[0], rear_left[1],
+            fill="#94a3b8", outline=""
+        )
+        self.canvas.create_polygon(
+            front_left[0], front_left[1],
+            front_right[0], front_right[1],
+            front_center[0] + dir_x * 14, front_center[1] + dir_y * 14,
+            fill="#111827", outline=""
+        )
+
+        self.canvas.create_oval(pivot_x - 15, pivot_y - 15, pivot_x + 15, pivot_y + 15, fill="#94a3b8", outline="")
+        self.canvas.create_oval(pivot_x - 7, pivot_y - 7, pivot_x + 7, pivot_y + 7, fill="#e2e8f0", outline="")
+
+        if self.muzzle_flash_frames > 0:
+            scale = 1 + self.muzzle_flash_frames * 0.16
+            tip_x = front_center[0] + dir_x * (28 * scale)
+            tip_y = front_center[1] + dir_y * (28 * scale)
+            side = 18 * scale
+            back = 12 * scale
+            self.canvas.create_polygon(
+                front_center[0] + perp_x * side, front_center[1] + perp_y * side,
+                tip_x, tip_y,
+                front_center[0] - perp_x * side, front_center[1] - perp_y * side,
+                front_center[0] - dir_x * back, front_center[1] - dir_y * back,
+                fill="#f97316", outline=""
+            )
+            self.canvas.create_polygon(
+                front_center[0] + perp_x * (side * 0.55), front_center[1] + perp_y * (side * 0.55),
+                front_center[0] + dir_x * (34 * scale), front_center[1] + dir_y * (34 * scale),
+                front_center[0] - perp_x * (side * 0.55), front_center[1] - perp_y * (side * 0.55),
+                front_center[0] - dir_x * (5 * scale), front_center[1] - dir_y * (5 * scale),
+                fill="#fde68a", outline=""
+            )
+
+    def _draw_wheel(self, center_x: float, center_y: float, radius: float) -> None:
+        self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill="#475569", outline="#1e293b", width=3)
+        self.canvas.create_oval(center_x - radius * 0.35, center_y - radius * 0.35, center_x + radius * 0.35, center_y + radius * 0.35, fill="#cbd5e1", outline="")
+        for index in range(6):
+            angle = self.wheel_spin + index * math.pi / 3
+            dx = math.cos(angle) * radius * 0.8
+            dy = math.sin(angle) * radius * 0.8
+            self.canvas.create_line(center_x, center_y, center_x + dx, center_y + dy, fill="#e2e8f0", width=2)
 
     def _draw_projectiles(self) -> None:
         for projectile in self.projectiles:
             x = projectile["x"]
             y = projectile["y"]
-            self.canvas.create_oval(
-                x - 7,
-                y - 7,
-                x + 7,
-                y + 7,
-                fill="#111827",
-                outline="#f8fafc",
-                width=1,
-            )
-            self.canvas.create_line(x - 14, y + 6, x - 24, y + 16, fill="#cbd5e1", width=2)
+            self.canvas.create_oval(x - 8, y - 8, x + 8, y + 8, fill="#111827", outline="#f8fafc", width=1)
+
+    def _get_cannon_pivot(self) -> tuple[float, float]:
+        dir_x = math.cos(self.cannon_angle)
+        dir_y = math.sin(self.cannon_angle)
+        return self.pivot_x - dir_x * self.cannon_recoil, self.pivot_y - dir_y * self.cannon_recoil
+
+    def _get_cannon_muzzle(self) -> tuple[float, float]:
+        pivot_x, pivot_y = self._get_cannon_pivot()
+        dir_x = math.cos(self.cannon_angle)
+        dir_y = math.sin(self.cannon_angle)
+        return pivot_x + dir_x * 104, pivot_y + dir_y * 104
 
     def _draw_explosions(self) -> None:
         for explosion in self.explosions:
             x = explosion["x"]
             y = explosion["y"]
             frame = explosion["frame"]
-            radius = 8 + frame * 3
-            inner = max(2, radius - 10)
+            progress = frame / EXPLOSION_DURATION
+            radius = 10 + progress * 46
+            inner = max(4, radius * 0.32)
             color = explosion["color"]
             self.canvas.create_oval(x - radius, y - radius, x + radius, y + radius, outline=color, width=3)
             self.canvas.create_oval(x - inner, y - inner, x + inner, y + inner, fill="#fff7ed", outline="")
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]:
-                length = radius + 8
-                self.canvas.create_line(x, y, x + dx * length, y + dy * length, fill=color, width=2)
+            self.canvas.create_oval(x - radius * 0.65, y - radius * 0.65, x + radius * 0.65, y + radius * 0.65, outline="#fde68a", width=2)
+            for index in range(12):
+                angle = progress * 0.9 + index * (math.pi * 2 / 12)
+                spark_len = radius + 6 + (index % 4) * 4
+                sx = x + math.cos(angle) * spark_len
+                sy = y + math.sin(angle) * spark_len
+                self.canvas.create_line(x, y, sx, sy, fill=color, width=2)
+                self.canvas.create_oval(sx - 2, sy - 2, sx + 2, sy + 2, fill="#fde68a", outline="")
+
+    def _draw_smokes(self) -> None:
+        for smoke in self.smokes:
+            progress = smoke["frame"] / SMOKE_DURATION
+            alpha_scale = 1.0 - progress
+            base = 16 + progress * 26
+            color = "#cbd5e1" if progress < 0.45 else "#94a3b8"
+            for dx, dy, scale in [(-18, -8, 0.9), (0, -18, 1.1), (16, -6, 0.8), (-6, 10, 0.7)]:
+                radius = base * scale
+                x = smoke["x"] + dx * progress
+                y = smoke["y"] + dy * progress
+                self.canvas.create_oval(
+                    x - radius,
+                    y - radius,
+                    x + radius,
+                    y + radius,
+                    fill=color,
+                    outline="",
+                    stipple="gray25" if alpha_scale > 0.45 else "gray50",
+                )
 
     def _draw_message(self, title: str, subtitle: str) -> None:
         left = 220
@@ -766,30 +817,9 @@ class BalloonTypingGame:
         right = WINDOW_WIDTH - 220
         bottom = WINDOW_HEIGHT - 190
         self.canvas.create_rectangle(left, top, right, bottom, fill="#ffffff", outline="#60a5fa", width=3)
-        self.canvas.create_text(
-            WINDOW_WIDTH // 2,
-            top + 52,
-            text=title,
-            fill="#1d4ed8",
-            font=("Microsoft YaHei UI", 24, "bold"),
-            width=right - left - 40,
-        )
-        self.canvas.create_text(
-            WINDOW_WIDTH // 2,
-            top + 106,
-            text=subtitle,
-            fill=TEXT_MAIN,
-            font=("Microsoft YaHei UI", 12),
-            width=right - left - 40,
-        )
-        self.canvas.create_text(
-            WINDOW_WIDTH // 2,
-            top + 148,
-            text="音乐：Be Chillin（CC0） | 发射音效：shot_01.ogg（CC0）",
-            fill=TEXT_MUTED,
-            font=("Microsoft YaHei UI", 10),
-            width=right - left - 40,
-        )
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 52, text=title, fill="#1d4ed8", font=("Microsoft YaHei UI", 24, "bold"), width=right - left - 40)
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 106, text=subtitle, fill=TEXT_MAIN, font=("Microsoft YaHei UI", 12), width=right - left - 40)
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 148, text="音乐：Be Chillin | 转向：Turret Turn | 发射：Cannon Fire | 爆炸：Shell Explosion", fill=TEXT_MUTED, font=("Microsoft YaHei UI", 10), width=right - left - 40)
 
     def _on_close(self) -> None:
         self._cancel_timers()

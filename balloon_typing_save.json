@@ -1,12 +1,24 @@
 {
   "player_name": "慢慢",
-  "last_difficulty": "简单",
+  "last_difficulty": "普通",
   "leaderboard": [
     {
       "name": "玩家1",
       "score": 100,
       "difficulty": "困难",
       "timestamp": "2026-04-25 14:58:47"
+    },
+    {
+      "name": "慢慢",
+      "score": 100,
+      "difficulty": "普通",
+      "timestamp": "2026-04-25 15:16:54"
+    },
+    {
+      "name": "慢慢",
+      "score": 100,
+      "difficulty": "普通",
+      "timestamp": "2026-04-25 15:26:36"
     },
     {
       "name": "玩家1",
