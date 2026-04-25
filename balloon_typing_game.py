@@ -1,7 +1,10 @@
+# -*- coding: utf-8 -*-
+
 import json
 import math
 import random
 import string
+import sys
 import threading
 import time
 import tkinter as tk
@@ -31,11 +34,18 @@ GROUND_HEIGHT = 92
 CANNON_TURN_SPEED = 0.18
 BURST_TURN_SPEED = 0.38
 
-ASSETS_DIR = Path(__file__).with_name("assets")
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+else:
+    APP_DIR = Path(__file__).resolve().parent
+    RESOURCE_DIR = APP_DIR
+
+ASSETS_DIR = RESOURCE_DIR / "assets"
 MUSIC_FILE = ASSETS_DIR / "be_chillin.mp3"
 FIRE_SOUND_FILE = ASSETS_DIR / "cannon_fire.wav"
 EXPLOSION_SOUND_FILE = ASSETS_DIR / "shell_explosion.wav"
-SAVE_FILE = Path(__file__).with_name("balloon_typing_save.json")
+SAVE_FILE = APP_DIR / "balloon_typing_save.json"
 
 BG_TOP = "#d7f0ff"
 PANEL_COLOR = "#ffffff"
