@@ -1,116 +1,30 @@
 {
-  "active_player": "玩家1",
-  "players": {
-    "man": {
-      "save_name": "man的存档",
-      "difficulty": "困难",
-      "coins": 20,
-      "inventory": {
-        "cannons_owned": [
-          "normal"
-        ],
-        "equipped_cannon": "normal",
-        "decorations_owned": [],
-        "equipped_decorations": [],
-        "consumables": {}
-      },
-      "progress": {
-        "score": 0,
-        "level": 1,
-        "level_score": 0,
-        "level_target": 50,
-        "lives": 5
-      },
-      "best_result": {
-        "score": 31,
-        "level": 1,
-        "difficulty": "简单",
-        "timestamp": "2026-04-26 15:03:47"
-      }
-    },
-    "玩家1": {
-      "save_name": "玩家1的存档",
-      "difficulty": "困难",
-      "coins": 928,
-      "inventory": {
-        "cannons_owned": [
-          "normal",
-          "rainbow",
-          "diamond"
-        ],
-        "equipped_cannon": "rainbow",
-        "decorations_owned": [
-          "flower",
-          "leaf"
-        ],
-        "equipped_decorations": [
-          "leaf"
-        ],
-        "consumables": {}
-      },
-      "progress": {
-        "score": 267,
-        "level": 6,
-        "level_score": 24,
-        "level_target": 50,
-        "lives": 3
-      },
-      "best_result": {
-        "score": 100,
-        "level": 1,
-        "difficulty": "困难",
-        "timestamp": "2026-04-25 14:58:47"
-      }
-    },
-    "慢慢": {
-      "save_name": "慢慢的存档",
-      "difficulty": "困难",
-      "coins": 3,
-      "inventory": {
-        "cannons_owned": [
-          "normal"
-        ],
-        "equipped_cannon": "normal",
-        "decorations_owned": [],
-        "equipped_decorations": [],
-        "consumables": {}
-      },
-      "progress": {
-        "score": 146,
-        "level": 4,
-        "level_score": 0,
-        "level_target": 50,
-        "lives": 4
-      },
-      "best_result": {
-        "score": 0,
-        "level": 1,
-        "difficulty": "简单",
-        "timestamp": "2026-04-25 16:21:28"
-      }
-    }
-  },
+  "player_name": "慢慢",
+  "last_difficulty": "简单",
   "leaderboard": [
     {
       "name": "玩家1",
       "score": 100,
-      "level": 1,
       "difficulty": "困难",
       "timestamp": "2026-04-25 14:58:47"
     },
     {
-      "name": "man",
-      "score": 31,
-      "level": 1,
-      "difficulty": "简单",
-      "timestamp": "2026-04-26 15:03:47"
+      "name": "玩家1",
+      "score": 73,
+      "difficulty": "普通",
+      "timestamp": "2026-04-25 12:44:48"
     },
     {
       "name": "慢慢",
-      "score": 0,
-      "level": 1,
+      "score": 47,
+      "difficulty": "困难",
+      "timestamp": "2026-04-25 15:00:03"
+    },
+    {
+      "name": "慢慢",
+      "score": -4,
       "difficulty": "简单",
-      "timestamp": "2026-04-25 16:21:28"
+      "timestamp": "2026-04-25 15:03:04"
     }
   ]
 }
