@@ -13,6 +13,19 @@ from ctypes import windll
 from pathlib import Path
 from tkinter import messagebox, simpledialog
 
+from balloon_inventory import BackpackWindow
+from balloon_skills import RAINBOW_SPLASH_RADIUS, SkillManager
+from balloon_shop import (
+    CANNON_ITEMS,
+    DECORATION_ITEMS,
+    DEFAULT_CANNON_ID,
+    ShopWindow,
+    create_default_inventory,
+    get_cannon_style,
+    get_shop_item,
+    normalize_inventory,
+)
+
 try:
     import winsound
 except ImportError:  # pragma: no cover
@@ -198,18 +211,22 @@ class BalloonTypingGame:
         self.level_target = LEVEL_TARGET
         self.lives = INITIAL_LIVES
         self.coins = 0
-        self.inventory: dict[str, int] = {}
+        self.inventory: dict = create_default_inventory()
+        self.equipped_cannon = DEFAULT_CANNON_ID
 
         self.running = False
         self.game_over = False
         self.awaiting_continue = False
-        self.result_saved = False
         self.paused = False
+        self.result_saved = False
         self.session_player: str | None = None
         self.session_best_entry: dict | None = None
         self.exit_dialog: tk.Toplevel | None = None
+        self.shop_window = None
+        self.backpack_window = None
         self.tick_after_id = None
         self.spawn_after_id = None
+        self._switching_player = False
 
         self.balloons: list[dict] = []
         self.explosions: list[dict] = []
@@ -218,6 +235,10 @@ class BalloonTypingGame:
         self.pending_shots: list[dict] = []
 
         self.sound = SoundManager()
+        self.skills = SkillManager()
+        self.skill_var = tk.StringVar(value="技能：无")
+        self.decoration_images: dict[str, tk.PhotoImage] = {}
+        self._load_decoration_images()
 
         self.cannon_x = WINDOW_WIDTH // 2
         self.carriage_y = WINDOW_HEIGHT - GROUND_HEIGHT + 22
@@ -243,8 +264,7 @@ class BalloonTypingGame:
         self._refresh_player_menu()
         if self.active_player:
             self._switch_player(self.active_player)
-            self._draw_scene()
-            self._draw_message("打字打气球", "点击开始或读档继续")
+            self._load_progress_for_active(auto=True)
         else:
             self._refresh_leaderboard()
             self._draw_scene()
@@ -263,6 +283,16 @@ class BalloonTypingGame:
 
         if "players" in raw and isinstance(raw["players"], dict):
             raw.setdefault("active_player", "")
+            for player_name, player in list(raw["players"].items()):
+                if not isinstance(player, dict):
+                    raw["players"].pop(player_name, None)
+                    continue
+                player.setdefault("save_name", f"{player_name}的存档")
+                player.setdefault("difficulty", "普通")
+                player.setdefault("coins", 0)
+                player["inventory"] = normalize_inventory(player.get("inventory", {}))
+                player.setdefault("progress", None)
+                player.setdefault("best_result", None)
             raw["leaderboard"] = self._normalize_leaderboard(raw.get("leaderboard", []))
             return raw
 
@@ -282,7 +312,7 @@ class BalloonTypingGame:
                     "save_name": f"{player_name}的存档",
                     "difficulty": clean_text(slot_data.get("difficulty", ""), "普通"),
                     "coins": int(slot_data.get("coins", raw.get("coins", 0))),
-                    "inventory": dict(slot_data.get("inventory", raw.get("inventory", {}))),
+                    "inventory": normalize_inventory(slot_data.get("inventory", raw.get("inventory", {}))),
                     "progress": None,
                     "best_result": None,
                 },
@@ -310,7 +340,7 @@ class BalloonTypingGame:
                     "save_name": f"{player_name}的存档",
                     "difficulty": clean_text(profile.get("difficulty", ""), "普通"),
                     "coins": int(raw.get("coins", 0)),
-                    "inventory": dict(raw.get("inventory", {})),
+                    "inventory": normalize_inventory(raw.get("inventory", {})),
                     "progress": None,
                     "best_result": None,
                 },
@@ -336,7 +366,7 @@ class BalloonTypingGame:
                     "save_name": f"{player_name}的存档",
                     "difficulty": entry["difficulty"],
                     "coins": 0,
-                    "inventory": {},
+                    "inventory": create_default_inventory(),
                     "progress": None,
                     "best_result": None,
                 },
@@ -427,11 +457,14 @@ class BalloonTypingGame:
         diff_option.pack(side="left", padx=(0, 8))
 
         self._create_button(controls, "新建玩家", self.create_player_save).pack(side="left", padx=(0, 8))
+        self._create_button(controls, "商店", self.open_shop).pack(side="left", padx=(0, 8))
+        self._create_button(controls, "背包", self.open_backpack).pack(side="left", padx=(0, 8))
         self._create_button(controls, "开始", self.start_game).pack(side="left", padx=(0, 8))
         self._create_button(controls, "读档", self.load_progress).pack(side="left", padx=(0, 8))
         self.continue_button = self._create_button(controls, "继续", self.continue_level)
         self.continue_button.pack(side="left", padx=(0, 8))
         self.continue_button.config(state="disabled")
+        self._create_button(controls, "暂停", self.toggle_pause).pack(side="left", padx=(0, 8))
         self._create_button(controls, "删除玩家", self.delete_player).pack(side="left", padx=(0, 8))
         self._create_button(controls, "重开", self.restart_game).pack(side="left", padx=(0, 8))
 
@@ -446,6 +479,8 @@ class BalloonTypingGame:
         side.pack(side="left", padx=(12, 0), fill="y")
         side.pack_propagate(False)
         tk.Label(side, textvariable=self.save_name_var, justify="left", anchor="nw", fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 10, "bold"), wraplength=210).pack(anchor="w", pady=(0, 10))
+        tk.Label(side, text="技能", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
+        tk.Label(side, textvariable=self.skill_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Consolas", 9), wraplength=210).pack(anchor="w", fill="x", pady=(8, 12))
         tk.Label(side, text="排行榜", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
         tk.Label(side, textvariable=self.rank_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Consolas", 10)).pack(anchor="w", fill="both", expand=True, pady=(10, 0))
 
@@ -465,8 +500,32 @@ class BalloonTypingGame:
         self.player_var.trace_add("write", self._on_player_changed)
         self.root.focus_force()
 
+    def _load_decoration_images(self) -> None:
+        crops = {
+            "flower": (0, 0, 18, 24),
+            "leaf": (0, 0, 26, 32),
+        }
+        for item_id, item in DECORATION_ITEMS.items():
+            file_path = ASSETS_DIR / item.asset_file
+            if not file_path.exists():
+                continue
+            try:
+                source = tk.PhotoImage(file=str(file_path))
+                x1, y1, x2, y2 = crops.get(item_id, (0, 0, source.width(), source.height()))
+                image = tk.PhotoImage(width=x2 - x1, height=y2 - y1)
+                image.tk.call(image, "copy", source, "-from", x1, y1, x2, y2, "-to", 0, 0)
+                self.decoration_images[item_id] = image
+            except tk.TclError:
+                continue
+
     def _handle_keypress(self, event: tk.Event) -> None:
         if event.widget is not self.root and isinstance(event.widget, tk.Entry):
+            return
+        if event.keysym == "space":
+            self.toggle_pause()
+            return
+        if event.char in "123456789":
+            self.use_skill(int(event.char))
             return
         char = event.char.lower()
         if char in string.ascii_lowercase:
@@ -503,23 +562,49 @@ class BalloonTypingGame:
     def _switch_player(self, player_name: str) -> None:
         if player_name not in self.save_data["players"]:
             return
+        self._switching_player = True
         self.active_player = player_name
         self.player_var.set(player_name)
         player = self.save_data["players"][player_name]
         self.difficulty_var.set(player.get("difficulty", "普通"))
         self.coins = int(player.get("coins", 0))
-        self.inventory = dict(player.get("inventory", {}))
+        self.inventory = normalize_inventory(player.get("inventory", {}))
+        self.equipped_cannon = self.inventory["equipped_cannon"]
         self.coin_var.set(f"金币 {self.coins}")
+        self._refresh_skill_ui()
         if not self.running and not self.awaiting_continue and not self.game_over:
             self.session_player = None
             self.session_best_entry = None
         self._sync_player_display()
         self._refresh_leaderboard()
+        self._switching_player = False
 
     def _on_player_changed(self, *_args) -> None:
+        if self._switching_player:
+            return
         player_name = self.player_var.get()
         if player_name and player_name != self.active_player:
+            previous_player = self.active_player
+            was_running = self.running
+            if was_running:
+                self.pause_game(show_message=False)
+                choice = messagebox.askyesnocancel(
+                    "切换玩家",
+                    f"当前玩家“{previous_player}”的游戏正在进行。是否保存当前存档后切换到“{player_name}”？",
+                    parent=self.root,
+                )
+                if choice is None:
+                    self._switching_player = True
+                    self.player_var.set(previous_player)
+                    self._switching_player = False
+                    self.status_var.set("游戏已暂停，按空格继续")
+                    self._draw_pause_overlay()
+                    return
+                if choice:
+                    self._save_progress()
+
             self._switch_player(player_name)
+            self._load_progress_for_active(auto=True)
 
     def _save_player_profile(self) -> None:
         if not self.active_player:
@@ -530,7 +615,7 @@ class BalloonTypingGame:
                 "save_name": f"{self.active_player}的存档",
                 "difficulty": "普通",
                 "coins": 0,
-                "inventory": {},
+                "inventory": create_default_inventory(),
                 "progress": None,
                 "best_result": None,
             },
@@ -538,7 +623,10 @@ class BalloonTypingGame:
         player["save_name"] = f"{self.active_player}的存档"
         player["difficulty"] = self.difficulty_var.get()
         player["coins"] = self.coins
+        self.inventory = normalize_inventory(self.inventory)
+        self.equipped_cannon = self.inventory["equipped_cannon"]
         player["inventory"] = dict(self.inventory)
+        self._refresh_skill_ui()
 
     def _snapshot_progress(self) -> dict:
         return {
@@ -620,6 +708,184 @@ class BalloonTypingGame:
             lines.append(f"{index:>2}. {item['name'][:6]:<6} L{item['level']:>3}  {item['score']:>3}")
         self.rank_var.set("\n".join(lines))
 
+    def _shop_state(self) -> tuple[int, dict]:
+        return self.coins, normalize_inventory(self.inventory)
+
+    def _clear_shop_window(self) -> None:
+        self.shop_window = None
+
+    def _clear_backpack_window(self) -> None:
+        self.backpack_window = None
+
+    def open_shop(self) -> None:
+        if not self.active_player:
+            self.status_var.set("请先新建玩家")
+            return
+        if self.shop_window is not None and self.shop_window.window.winfo_exists():
+            self.shop_window.window.lift()
+            self.shop_window.window.focus_force()
+            return
+        self.inventory = normalize_inventory(self.inventory)
+        self.equipped_cannon = self.inventory["equipped_cannon"]
+        self.shop_window = ShopWindow(self.root, self._shop_state, self.buy_item, self._clear_shop_window)
+
+    def open_backpack(self) -> None:
+        if not self.active_player:
+            self.status_var.set("请先新建玩家")
+            return
+        if self.backpack_window is not None and self.backpack_window.window.winfo_exists():
+            self.backpack_window.window.lift()
+            self.backpack_window.window.focus_force()
+            return
+        self.inventory = normalize_inventory(self.inventory)
+        self.equipped_cannon = self.inventory["equipped_cannon"]
+        self.backpack_window = BackpackWindow(
+            self.root,
+            self._shop_state,
+            self.equip_cannon,
+            self.toggle_decoration,
+            self._clear_backpack_window,
+        )
+
+    def buy_item(self, item_id: str) -> tuple[bool, str]:
+        item = get_shop_item(item_id)
+        if item is None:
+            return False, "未知道具"
+        self.inventory = normalize_inventory(self.inventory)
+        if item_id in CANNON_ITEMS:
+            owned = self.inventory["cannons_owned"]
+        else:
+            owned = self.inventory["decorations_owned"]
+        if not item.reusable and item_id in owned:
+            return False, f"已经拥有{item.name}"
+        if self.coins < item.price:
+            return False, f"金币不足，需要 {item.price} 金币"
+        self.coins -= item.price
+        if item.reusable:
+            consumables = self.inventory.setdefault("consumables", {})
+            consumables[item_id] = int(consumables.get(item_id, 0)) + 1
+        else:
+            owned.append(item_id)
+        if item_id in CANNON_ITEMS:
+            self.inventory["cannons_owned"] = list(dict.fromkeys(owned))
+        else:
+            self.inventory["decorations_owned"] = list(dict.fromkeys(owned))
+        self.coin_var.set(f"金币 {self.coins}")
+        self._save_player_profile()
+        self._write_save_data()
+        self.status_var.set(f"已购买{item.name}")
+        return True, f"已购买{item.name}"
+
+    def buy_cannon(self, cannon_id: str) -> tuple[bool, str]:
+        return self.buy_item(cannon_id)
+
+    def equip_cannon(self, cannon_id: str) -> tuple[bool, str]:
+        item = CANNON_ITEMS.get(cannon_id)
+        if item is None:
+            return False, "未知道具"
+        self.inventory = normalize_inventory(self.inventory)
+        if cannon_id not in self.inventory["cannons_owned"]:
+            return False, f"尚未购买{item.name}"
+        self.inventory["equipped_cannon"] = cannon_id
+        self.equipped_cannon = cannon_id
+        self._save_player_profile()
+        self._write_save_data()
+        self.status_var.set(f"已装备{item.name}")
+        self.skills.reset_pending()
+        self._refresh_skill_ui()
+        self._draw_scene()
+        return True, f"已装备{item.name}"
+
+    def toggle_decoration(self, item_id: str) -> tuple[bool, str]:
+        item = DECORATION_ITEMS.get(item_id)
+        if item is None:
+            return False, "未知装饰"
+        self.inventory = normalize_inventory(self.inventory)
+        if item_id not in self.inventory["decorations_owned"]:
+            return False, f"尚未购买{item.name}"
+        equipped = list(self.inventory.get("equipped_decorations", []))
+        if item_id in equipped:
+            equipped = [value for value in equipped if value != item_id]
+            message = f"已卸下{item.name}"
+        else:
+            equipped.append(item_id)
+            message = f"已装备{item.name}"
+        self.inventory["equipped_decorations"] = list(dict.fromkeys(equipped))
+        self._save_player_profile()
+        self._write_save_data()
+        self.status_var.set(message)
+        self._draw_scene()
+        return True, message
+
+    def _refresh_skill_ui(self) -> None:
+        lines = []
+        for slot, skill in enumerate(self.skills.get_slots(self.equipped_cannon), start=1):
+            if skill is None:
+                lines.append(f"{slot}. -")
+            else:
+                remaining = self.skills.remaining_cooldown(skill)
+                suffix = "就绪" if remaining == 0 else f"{remaining}s"
+                lines.append(f"{slot}. {skill.name} [{suffix}]")
+        self.skill_var.set("\n".join(lines))
+
+    def use_skill(self, slot: int) -> None:
+        if not self.running or self.game_over:
+            return
+        skill = self.skills.get_skill(self.equipped_cannon, slot)
+        if skill is None:
+            self.status_var.set(f"技能槽 {slot} 当前没有技能")
+            return
+        can_use, message = self.skills.can_use(skill)
+        if not can_use:
+            self.status_var.set(message)
+            self._refresh_skill_ui()
+            return
+        if self.equipped_cannon == "rainbow" and slot == 1:
+            self.skills.mark_used(skill)
+            self.skills.activate_pending("rainbow_splash")
+            self.status_var.set("彩虹连爆已准备，下一次命中会引爆周围气球")
+            self._refresh_skill_ui()
+            return
+        if self.equipped_cannon == "diamond" and slot == 1:
+            if not self.balloons:
+                self.status_var.set("当前没有可清空的气球")
+                return
+            self.skills.mark_used(skill)
+            self._clear_visible_balloons("钻石清场")
+            self._refresh_skill_ui()
+
+    def _clear_visible_balloons(self, reason: str) -> None:
+        targets = list(self.balloons)
+        if not targets:
+            return
+        self._apply_balloon_hits(targets, reason)
+        self.projectiles = []
+        self.pending_shots = []
+        self._save_progress()
+        self._draw_scene()
+
+    def _apply_balloon_hits(self, targets: list[dict], reason: str) -> bool:
+        if not targets:
+            return False
+        target_ids = {target["id"] for target in targets}
+        for target in targets:
+            self.explosions.append({"x": target["x"], "y": target["y"], "color": target["color"], "frame": 0})
+            self.smokes.append({"x": target["x"], "y": target["y"], "frame": 0})
+        self.sound.play_effect_now(EXPLOSION_SOUND_FILE, fallback_name="lose")
+        hit_count = len(target_ids)
+        self.score += hit_count
+        self.level_score += hit_count
+        self.score_var.set(f"分数 {self.score}")
+        self.status_var.set(f"{reason}，击破 {hit_count} 个气球")
+        self.balloons = [balloon for balloon in self.balloons if balloon["id"] not in target_ids]
+        self.projectiles = [projectile for projectile in self.projectiles if projectile["target_id"] not in target_ids]
+        self.pending_shots = [shot for shot in self.pending_shots if shot["target_id"] not in target_ids]
+        self._refresh_leaderboard()
+        if self.level_score >= self.level_target:
+            self._advance_level()
+            return True
+        return False
+
     def create_player_save(self) -> None:
         player_name = simpledialog.askstring("新建玩家", "输入玩家名字：", parent=self.root)
         if player_name is None:
@@ -632,11 +898,14 @@ class BalloonTypingGame:
             messagebox.showerror("名字重复", f"玩家“{player_name}”已存在。", parent=self.root)
             return
 
+        self.coins = 0
+        self.inventory = create_default_inventory()
+        self.equipped_cannon = DEFAULT_CANNON_ID
         self.save_data["players"][player_name] = {
             "save_name": f"{player_name}的存档",
             "difficulty": self.difficulty_var.get(),
             "coins": self.coins,
-            "inventory": {},
+            "inventory": dict(self.inventory),
             "progress": None,
             "best_result": None,
         }
@@ -651,6 +920,7 @@ class BalloonTypingGame:
         self.running = False
         self.game_over = False
         self.awaiting_continue = False
+        self.paused = False
         self.result_saved = False
         self.session_player = None
         self.session_best_entry = None
@@ -659,6 +929,7 @@ class BalloonTypingGame:
         self.smokes = []
         self.projectiles = []
         self.pending_shots = []
+        self.skills.reset_pending()
         self.next_balloon_id = 1
         self.cannon_angle = -math.pi / 2
         self.cannon_target_angle = -math.pi / 2
@@ -709,6 +980,9 @@ class BalloonTypingGame:
         if not self.active_player:
             self.status_var.set("请先新建玩家")
             return
+        if self.paused:
+            self.resume_game()
+            return
         if self.awaiting_continue and not self.game_over:
             self.continue_level()
             return
@@ -720,12 +994,14 @@ class BalloonTypingGame:
         self.session_player = self.active_player
         self.session_best_entry = None
         self.running = True
+        self.paused = False
         self.status_var.set(f"游戏进行中 {self.difficulty_var.get()}")
         self.sound.play_pattern("start")
         self.sound.start_bgm(MUSIC_FILE)
         self.continue_button.config(state="disabled")
         self._save_progress()
         self._draw_scene()
+        self._refresh_skill_ui()
         self._schedule_tick()
         self._schedule_spawn()
 
@@ -736,18 +1012,53 @@ class BalloonTypingGame:
         self.session_best_entry = None
         self.awaiting_continue = False
         self.running = True
+        self.paused = False
         self.status_var.set(f"游戏进行中 第 {self.level} 关")
         self.sound.start_bgm(MUSIC_FILE)
         self.continue_button.config(state="disabled")
         self._save_progress()
         self._draw_scene()
+        self._refresh_skill_ui()
         self._schedule_tick()
         self._schedule_spawn()
+
+    def pause_game(self, show_message: bool = True, save_progress: bool = False) -> None:
+        if not self.running or self.game_over:
+            return
+        self.running = False
+        self.paused = True
+        self._cancel_timers()
+        self.sound.stop_bgm()
+        if save_progress:
+            self._save_progress()
+        self.status_var.set("游戏已暂停，按空格继续")
+        if show_message:
+            self._draw_pause_overlay()
+
+    def resume_game(self) -> None:
+        if not self.paused or self.game_over:
+            return
+        self.paused = False
+        self.running = True
+        self.status_var.set(f"游戏进行中 第 {self.level} 关")
+        self.sound.start_bgm(MUSIC_FILE)
+        self._draw_scene()
+        self._schedule_tick()
+        self._schedule_spawn()
+
+    def toggle_pause(self) -> None:
+        if self.running:
+            self.pause_game(save_progress=True)
+        elif self.paused:
+            self.resume_game()
 
     def load_progress(self) -> None:
         if not self.active_player:
             self.status_var.set("请先新建玩家")
             return
+        self._load_progress_for_active(auto=False)
+
+    def _load_progress_for_active(self, auto: bool = False) -> None:
         progress = self.save_data["players"][self.active_player].get("progress")
         if not progress:
             progress = self._default_progress()
@@ -762,11 +1073,14 @@ class BalloonTypingGame:
         self.level_target = int(progress.get("level_target", LEVEL_TARGET))
         self.lives = int(progress.get("lives", INITIAL_LIVES))
         self.coins = int(self.save_data["players"][self.active_player].get("coins", 0))
-        self.inventory = dict(self.save_data["players"][self.active_player].get("inventory", {}))
+        self.inventory = normalize_inventory(self.save_data["players"][self.active_player].get("inventory", {}))
+        self.equipped_cannon = self.inventory["equipped_cannon"]
+        self._refresh_skill_ui()
 
         self.running = False
         self.game_over = False
         self.awaiting_continue = True
+        self.paused = False
         self.session_player = self.active_player
         self.session_best_entry = None
         self.result_saved = False
@@ -775,6 +1089,7 @@ class BalloonTypingGame:
         self.smokes = []
         self.projectiles = []
         self.pending_shots = []
+        self.skills.reset_pending()
         self.cannon_angle = -math.pi / 2
         self.cannon_target_angle = -math.pi / 2
         self.cannon_recoil = 0.0
@@ -785,7 +1100,8 @@ class BalloonTypingGame:
         self.level_var.set(f"关卡 {self.level}")
         self.coin_var.set(f"金币 {self.coins}")
         self.lives_var.set(f"失误余量 {self.lives}")
-        self.status_var.set(f"已读取 {self.active_player} 的存档，点击继续恢复游戏")
+        status_prefix = "已自动读取" if auto else "已读取"
+        self.status_var.set(f"{status_prefix} {self.active_player} 的存档，点击开始或继续恢复游戏")
         self.continue_button.config(state="normal")
         self._refresh_leaderboard()
         self._draw_scene()
@@ -802,12 +1118,14 @@ class BalloonTypingGame:
         self.running = False
         self.game_over = False
         self.awaiting_continue = False
+        self.paused = False
         self.result_saved = False
         self.balloons = []
         self.explosions = []
         self.smokes = []
         self.projectiles = []
         self.pending_shots = []
+        self.skills.reset_pending()
         self.next_balloon_id = 1
         self.cannon_angle = -math.pi / 2
         self.cannon_target_angle = -math.pi / 2
@@ -941,17 +1259,17 @@ class BalloonTypingGame:
             dy = target["y"] - projectile["y"]
             distance = math.hypot(dx, dy)
             if distance <= PROJECTILE_SPEED + BALLOON_RADIUS * 0.35:
-                hit_ids.add(target["id"])
-                self.explosions.append({"x": target["x"], "y": target["y"], "color": target["color"], "frame": 0})
-                self.smokes.append({"x": target["x"], "y": target["y"], "frame": 0})
-                self.sound.play_effect_now(EXPLOSION_SOUND_FILE, fallback_name="lose")
-                self.score += 1
-                self.level_score += 1
-                self.score_var.set(f"分数 {self.score}")
-                self.status_var.set(f"炮弹命中 {projectile['letter'].upper()} 气球")
-                self._refresh_leaderboard()
-                if self.level_score >= self.level_target:
-                    self._advance_level()
+                targets = [target]
+                reason = f"炮弹命中 {projectile['letter'].upper()} 气球"
+                if self.skills.consume_pending("rainbow_splash"):
+                    targets = [
+                        balloon
+                        for balloon in self.balloons
+                        if math.hypot(balloon["x"] - target["x"], balloon["y"] - target["y"]) <= RAINBOW_SPLASH_RADIUS
+                    ]
+                    reason = "彩虹连爆触发"
+                hit_ids.update(balloon["id"] for balloon in targets)
+                if self._apply_balloon_hits(targets, reason):
                     return
             else:
                 projectile["x"] += dx / distance * PROJECTILE_SPEED
@@ -1014,6 +1332,8 @@ class BalloonTypingGame:
         self.running = False
         self.game_over = True
         self.awaiting_continue = False
+        self.paused = False
+        self.skills.reset_pending()
         self._cancel_timers()
         self.sound.stop_bgm()
         self.continue_button.config(state="disabled")
@@ -1045,6 +1365,8 @@ class BalloonTypingGame:
         self.cannon_target_angle = self.cannon_angle
         self.running = False
         self.awaiting_continue = True
+        self.paused = False
+        self.skills.reset_pending()
         self._save_progress()
         self.continue_button.config(state="normal")
         self._cancel_timers()
@@ -1055,6 +1377,8 @@ class BalloonTypingGame:
         self.running = False
         self.game_over = True
         self.awaiting_continue = False
+        self.paused = False
+        self.skills.reset_pending()
         self._cancel_timers()
         self.sound.stop_bgm()
         self.continue_button.config(state="disabled")
@@ -1107,6 +1431,8 @@ class BalloonTypingGame:
             self.canvas.create_text(x, y + 2, text=balloon["letter"].upper(), fill="white", font=("Consolas", 20, "bold"))
 
     def _draw_cannon(self) -> None:
+        style = get_cannon_style(self.equipped_cannon)
+        effects = set(style.get("effects", ()))
         pivot_x, pivot_y = self._get_cannon_pivot()
         dir_x = math.cos(self.cannon_angle)
         dir_y = math.sin(self.cannon_angle)
@@ -1121,20 +1447,22 @@ class BalloonTypingGame:
         front_left = (front_center[0] - perp_x * 13, front_center[1] - perp_y * 13)
         front_right = (front_center[0] + perp_x * 13, front_center[1] + perp_y * 13)
 
-        self.canvas.create_oval(self.cannon_x - 84, self.carriage_y + 26, self.cannon_x + 84, self.carriage_y + 76, fill="#000000", outline="", stipple="gray25")
-        self._draw_wheel(self.cannon_x - 54, self.carriage_y + 26, 28)
-        self._draw_wheel(self.cannon_x + 54, self.carriage_y + 26, 28)
-        self.canvas.create_polygon(self.cannon_x - 46, self.carriage_y + 18, self.cannon_x + 46, self.carriage_y + 18, self.cannon_x + 26, self.carriage_y - 8, self.cannon_x - 26, self.carriage_y - 8, fill="#475569", outline="")
-        self.canvas.create_rectangle(self.cannon_x - 28, self.carriage_y - 18, self.cannon_x + 28, self.carriage_y + 10, fill="#64748b", outline="")
-        self.canvas.create_oval(self.cannon_x - 44, self.carriage_y - 52, self.cannon_x + 44, self.carriage_y + 6, fill="#475569", outline="")
-        self.canvas.create_oval(self.cannon_x - 30, self.carriage_y - 44, self.cannon_x + 30, self.carriage_y - 8, fill="#94a3b8", outline="")
-        self.canvas.create_polygon(rear_left[0] + 7, rear_left[1] + 10, rear_right[0] + 7, rear_right[1] + 10, front_right[0] + 7, front_right[1] + 10, front_left[0] + 7, front_left[1] + 10, fill="#0f172a", outline="", stipple="gray50")
-        self.canvas.create_polygon(rear_left[0], rear_left[1], rear_right[0], rear_right[1], front_right[0], front_right[1], front_left[0], front_left[1], fill="#334155", outline="")
-        self.canvas.create_oval(pivot_x - 18, pivot_y - 18, pivot_x + 18, pivot_y + 18, fill="#334155", outline="")
-        self.canvas.create_polygon(rear_left[0] - dir_x * 8 + perp_x * 4, rear_left[1] - dir_y * 8 + perp_y * 4, rear_right[0] - dir_x * 8 + perp_x * 4, rear_right[1] - dir_y * 8 + perp_y * 4, rear_right[0], rear_right[1], rear_left[0], rear_left[1], fill="#94a3b8", outline="")
-        self.canvas.create_polygon(front_left[0], front_left[1], front_right[0], front_right[1], front_center[0] + dir_x * 14, front_center[1] + dir_y * 14, fill="#111827", outline="")
-        self.canvas.create_oval(pivot_x - 14, pivot_y - 14, pivot_x + 14, pivot_y + 14, fill="#94a3b8", outline="")
-        self.canvas.create_oval(pivot_x - 6, pivot_y - 6, pivot_x + 6, pivot_y + 6, fill="#e2e8f0", outline="")
+        self.canvas.create_oval(self.cannon_x - 84, self.carriage_y + 26, self.cannon_x + 84, self.carriage_y + 76, fill=style["shadow"], outline="", stipple="gray25")
+        self._draw_wheel(self.cannon_x - 54, self.carriage_y + 26, 28, style)
+        self._draw_wheel(self.cannon_x + 54, self.carriage_y + 26, 28, style)
+        self.canvas.create_polygon(self.cannon_x - 46, self.carriage_y + 18, self.cannon_x + 46, self.carriage_y + 18, self.cannon_x + 26, self.carriage_y - 8, self.cannon_x - 26, self.carriage_y - 8, fill=style["carriage"], outline="")
+        self.canvas.create_rectangle(self.cannon_x - 28, self.carriage_y - 18, self.cannon_x + 28, self.carriage_y + 10, fill=style["carriage_top"], outline="")
+        self.canvas.create_oval(self.cannon_x - 44, self.carriage_y - 52, self.cannon_x + 44, self.carriage_y + 6, fill=style["body"], outline="")
+        self.canvas.create_oval(self.cannon_x - 30, self.carriage_y - 44, self.cannon_x + 30, self.carriage_y - 8, fill=style["body_light"], outline="")
+        self.canvas.create_polygon(rear_left[0] + 7, rear_left[1] + 10, rear_right[0] + 7, rear_right[1] + 10, front_right[0] + 7, front_right[1] + 10, front_left[0] + 7, front_left[1] + 10, fill=style["barrel_shadow"], outline="", stipple="gray50")
+        self.canvas.create_polygon(rear_left[0], rear_left[1], rear_right[0], rear_right[1], front_right[0], front_right[1], front_left[0], front_left[1], fill=style["barrel"], outline="")
+        self._draw_cannon_effects(effects, pivot_x, pivot_y, front_center, dir_x, dir_y, perp_x, perp_y, barrel_length, barrel_half_width, style)
+        self._draw_barrel_decorations(pivot_x, pivot_y, dir_x, dir_y, perp_x, perp_y, barrel_half_width)
+        self.canvas.create_oval(pivot_x - 18, pivot_y - 18, pivot_x + 18, pivot_y + 18, fill=style["pivot"], outline="")
+        self.canvas.create_polygon(rear_left[0] - dir_x * 8 + perp_x * 4, rear_left[1] - dir_y * 8 + perp_y * 4, rear_right[0] - dir_x * 8 + perp_x * 4, rear_right[1] - dir_y * 8 + perp_y * 4, rear_right[0], rear_right[1], rear_left[0], rear_left[1], fill=style["rear"], outline="")
+        self.canvas.create_polygon(front_left[0], front_left[1], front_right[0], front_right[1], front_center[0] + dir_x * 14, front_center[1] + dir_y * 14, fill=style["muzzle"], outline="")
+        self.canvas.create_oval(pivot_x - 14, pivot_y - 14, pivot_x + 14, pivot_y + 14, fill=style["trim"], outline="")
+        self.canvas.create_oval(pivot_x - 6, pivot_y - 6, pivot_x + 6, pivot_y + 6, fill=style["pivot_light"], outline="")
         if self.muzzle_flash_frames > 0:
             scale = 1 + self.muzzle_flash_frames * 0.16
             tip_x = front_center[0] + dir_x * (28 * scale)
@@ -1144,14 +1472,60 @@ class BalloonTypingGame:
             self.canvas.create_polygon(front_center[0] + perp_x * side, front_center[1] + perp_y * side, tip_x, tip_y, front_center[0] - perp_x * side, front_center[1] - perp_y * side, front_center[0] - dir_x * back, front_center[1] - dir_y * back, fill="#f97316", outline="")
             self.canvas.create_polygon(front_center[0] + perp_x * (side * 0.55), front_center[1] + perp_y * (side * 0.55), front_center[0] + dir_x * (34 * scale), front_center[1] + dir_y * (34 * scale), front_center[0] - perp_x * (side * 0.55), front_center[1] - perp_y * (side * 0.55), front_center[0] - dir_x * (5 * scale), front_center[1] - dir_y * (5 * scale), fill="#fde68a", outline="")
 
-    def _draw_wheel(self, center_x: float, center_y: float, radius: float) -> None:
-        self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill="#475569", outline="#1e293b", width=3)
-        self.canvas.create_oval(center_x - radius * 0.35, center_y - radius * 0.35, center_x + radius * 0.35, center_y + radius * 0.35, fill="#cbd5e1", outline="")
+    def _draw_cannon_effects(self, effects: set, pivot_x: float, pivot_y: float, front_center: tuple[float, float], dir_x: float, dir_y: float, perp_x: float, perp_y: float, barrel_length: float, barrel_half_width: float, style: dict) -> None:
+        if "rainbow_bands" in effects:
+            colors = ["#ef4444", "#f97316", "#facc15", "#22c55e", "#38bdf8", "#8b5cf6"]
+            for index, color in enumerate(colors):
+                start = 12 + index * (barrel_length - 22) / len(colors)
+                end = 12 + (index + 1) * (barrel_length - 22) / len(colors)
+                c1 = (pivot_x + dir_x * start, pivot_y + dir_y * start)
+                c2 = (pivot_x + dir_x * end, pivot_y + dir_y * end)
+                half = barrel_half_width * 0.78
+                self.canvas.create_polygon(c1[0] - perp_x * half, c1[1] - perp_y * half, c1[0] + perp_x * half, c1[1] + perp_y * half, c2[0] + perp_x * half, c2[1] + perp_y * half, c2[0] - perp_x * half, c2[1] - perp_y * half, fill=color, outline="")
+            for sx, sy in [(-64, -42), (66, -58), (-18, -72)]:
+                x = self.cannon_x + sx
+                y = self.carriage_y + sy
+                self.canvas.create_text(x, y, text="*", fill=style["trim"], font=("Consolas", 15, "bold"))
+        if "diamond_facets" in effects:
+            for distance, size in [(18, 9), (42, 11), (64, 8)]:
+                cx = pivot_x + dir_x * distance
+                cy = pivot_y + dir_y * distance
+                self.canvas.create_polygon(
+                    cx + perp_x * size,
+                    cy + perp_y * size,
+                    cx + dir_x * size,
+                    cy + dir_y * size,
+                    cx - perp_x * size,
+                    cy - perp_y * size,
+                    cx - dir_x * size,
+                    cy - dir_y * size,
+                    fill="#ffffff",
+                    outline="#67e8f9",
+                )
+            self.canvas.create_line(pivot_x + perp_x * barrel_half_width, pivot_y + perp_y * barrel_half_width, front_center[0] + perp_x * 10, front_center[1] + perp_y * 10, fill="#ecfeff", width=3)
+
+    def _draw_barrel_decorations(self, pivot_x: float, pivot_y: float, dir_x: float, dir_y: float, perp_x: float, perp_y: float, barrel_half_width: float) -> None:
+        equipped = normalize_inventory(self.inventory).get("equipped_decorations", [])
+        for index, item_id in enumerate(equipped[:2]):
+            x = pivot_x + dir_x * (32 + index * 24) - perp_x * (barrel_half_width + 8)
+            y = pivot_y + dir_y * (32 + index * 24) - perp_y * (barrel_half_width + 8)
+            image = self.decoration_images.get(item_id)
+            if image is not None:
+                self.canvas.create_image(x, y, image=image)
+            elif item_id == "flower":
+                self.canvas.create_oval(x - 7, y - 7, x + 7, y + 7, fill="#f472b6", outline="#be185d")
+                self.canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#facc15", outline="")
+            elif item_id == "leaf":
+                self.canvas.create_polygon(x, y - 10, x + 12, y, x, y + 10, x - 10, y + 2, fill="#22c55e", outline="#166534")
+
+    def _draw_wheel(self, center_x: float, center_y: float, radius: float, style: dict) -> None:
+        self.canvas.create_oval(center_x - radius, center_y - radius, center_x + radius, center_y + radius, fill=style["wheel"], outline=style["wheel_outline"], width=3)
+        self.canvas.create_oval(center_x - radius * 0.35, center_y - radius * 0.35, center_x + radius * 0.35, center_y + radius * 0.35, fill=style["wheel_hub"], outline="")
         for index in range(6):
             angle = self.wheel_spin + index * math.pi / 3
             dx = math.cos(angle) * radius * 0.8
             dy = math.sin(angle) * radius * 0.8
-            self.canvas.create_line(center_x, center_y, center_x + dx, center_y + dy, fill="#e2e8f0", width=2)
+            self.canvas.create_line(center_x, center_y, center_x + dx, center_y + dy, fill=style["spoke"], width=2)
 
     def _draw_projectiles(self) -> None:
         for projectile in self.projectiles:
@@ -1207,6 +1581,9 @@ class BalloonTypingGame:
         self.canvas.create_text(WINDOW_WIDTH // 2, top + 52, text=title, fill="#1d4ed8", font=("Microsoft YaHei UI", 24, "bold"), width=right - left - 40)
         self.canvas.create_text(WINDOW_WIDTH // 2, top + 106, text=subtitle, fill=TEXT_MAIN, font=("Microsoft YaHei UI", 12), width=right - left - 40)
         self.canvas.create_text(WINDOW_WIDTH // 2, top + 148, text=f"玩家：{self.active_player or '未选择'} | 金币：{self.coins}", fill=TEXT_MUTED, font=("Microsoft YaHei UI", 10), width=right - left - 40)
+
+    def _draw_pause_overlay(self) -> None:
+        self._draw_message("游戏已暂停", "按空格或点击开始继续游戏")
 
     def request_exit(self) -> None:
         if self.exit_dialog is not None and self.exit_dialog.winfo_exists():

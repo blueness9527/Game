@@ -1,17 +1,25 @@
 {
-  "active_player": "慢慢",
+  "active_player": "玩家1",
   "players": {
     "man": {
       "save_name": "man的存档",
       "difficulty": "困难",
       "coins": 20,
-      "inventory": {},
+      "inventory": {
+        "cannons_owned": [
+          "normal"
+        ],
+        "equipped_cannon": "normal",
+        "decorations_owned": [],
+        "equipped_decorations": [],
+        "consumables": {}
+      },
       "progress": {
-        "score": 144,
-        "level": 4,
+        "score": 0,
+        "level": 1,
         "level_score": 0,
         "level_target": 50,
-        "lives": 2
+        "lives": 5
       },
       "best_result": {
         "score": 31,
@@ -23,14 +31,29 @@
     "玩家1": {
       "save_name": "玩家1的存档",
       "difficulty": "困难",
-      "coins": 19,
-      "inventory": {},
+      "coins": 928,
+      "inventory": {
+        "cannons_owned": [
+          "normal",
+          "rainbow",
+          "diamond"
+        ],
+        "equipped_cannon": "rainbow",
+        "decorations_owned": [
+          "flower",
+          "leaf"
+        ],
+        "equipped_decorations": [
+          "leaf"
+        ],
+        "consumables": {}
+      },
       "progress": {
-        "score": 49,
-        "level": 2,
-        "level_score": 0,
+        "score": 267,
+        "level": 6,
+        "level_score": 24,
         "level_target": 50,
-        "lives": 5
+        "lives": 3
       },
       "best_result": {
         "score": 100,
@@ -42,14 +65,22 @@
     "慢慢": {
       "save_name": "慢慢的存档",
       "difficulty": "困难",
-      "coins": 2,
-      "inventory": {},
+      "coins": 3,
+      "inventory": {
+        "cannons_owned": [
+          "normal"
+        ],
+        "equipped_cannon": "normal",
+        "decorations_owned": [],
+        "equipped_decorations": [],
+        "consumables": {}
+      },
       "progress": {
-        "score": 98,
-        "level": 3,
+        "score": 146,
+        "level": 4,
         "level_score": 0,
         "level_target": 50,
-        "lives": 5
+        "lives": 4
       },
       "best_result": {
         "score": 0,

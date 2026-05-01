@@ -5,7 +5,8 @@ $entryFile = Join-Path $projectRoot "balloon_typing_game.py"
 $assetsDir = Join-Path $projectRoot "assets"
 $saveFile = Join-Path $projectRoot "balloon_typing_save.json"
 $binDir = Join-Path $projectRoot "bin"
-$buildDir = Join-Path $projectRoot "build"
+$buildRoot = Join-Path $projectRoot "build"
+$buildDir = Join-Path $buildRoot ("pyinstaller_" + [guid]::NewGuid().ToString("N"))
 $specDir = $buildDir
 $exeName = "BalloonTypingGame"
 
@@ -20,7 +21,7 @@ if (-not (Test-Path $assetsDir)) {
 New-Item -ItemType Directory -Force $binDir | Out-Null
 New-Item -ItemType Directory -Force $buildDir | Out-Null
 
-& python -m py_compile $entryFile
+& python -c "from pathlib import Path; compile(Path(r'$entryFile').read_text(encoding='utf-8'), r'$entryFile', 'exec')"
 if ($LASTEXITCODE -ne 0) {
     throw "Python syntax check failed"
 }
