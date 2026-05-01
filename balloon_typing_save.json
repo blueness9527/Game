@@ -1,120 +1,85 @@
 {
-  "player_name": "慢慢2",
-  "last_difficulty": "困难",
-  "coins": 16,
-  "inventory": {},
-  "save_slots": {
-    "存档1": {
-      "player_name": "慢慢2",
+  "active_player": "慢慢",
+  "players": {
+    "man": {
+      "save_name": "man的存档",
       "difficulty": "困难",
-      "score": 21,
-      "level": 1,
-      "level_score": 22,
-      "level_target": 50,
-      "coins": 16,
-      "lives": 2,
-      "inventory": {}
+      "coins": 20,
+      "inventory": {},
+      "progress": {
+        "score": 144,
+        "level": 4,
+        "level_score": 0,
+        "level_target": 50,
+        "lives": 2
+      },
+      "best_result": {
+        "score": 31,
+        "level": 1,
+        "difficulty": "简单",
+        "timestamp": "2026-04-26 15:03:47"
+      }
     },
-    "存档2": {
-      "player_name": "玩家1",
-      "difficulty": "普通",
-      "score": 2,
-      "level": 1,
-      "level_score": 2,
-      "level_target": 50,
-      "coins": 16,
-      "lives": 5,
-      "inventory": {}
+    "玩家1": {
+      "save_name": "玩家1的存档",
+      "difficulty": "困难",
+      "coins": 19,
+      "inventory": {},
+      "progress": {
+        "score": 49,
+        "level": 2,
+        "level_score": 0,
+        "level_target": 50,
+        "lives": 5
+      },
+      "best_result": {
+        "score": 100,
+        "level": 1,
+        "difficulty": "困难",
+        "timestamp": "2026-04-25 14:58:47"
+      }
     },
-    "存档3": {
-      "player_name": "玩家1",
-      "difficulty": "普通",
-      "score": 2,
-      "level": 1,
-      "level_score": 2,
-      "level_target": 50,
-      "coins": 16,
-      "lives": 5,
-      "inventory": {}
-    }
-  },
-  "slot_profiles": {
-    "存档1": {
-      "player_name": "慢慢2",
-      "difficulty": "困难"
-    },
-    "存档2": {
-      "player_name": "玩家1",
-      "difficulty": "普通"
-    },
-    "存档3": {
-      "player_name": "玩家1",
-      "difficulty": "普通"
+    "慢慢": {
+      "save_name": "慢慢的存档",
+      "difficulty": "困难",
+      "coins": 2,
+      "inventory": {},
+      "progress": {
+        "score": 98,
+        "level": 3,
+        "level_score": 0,
+        "level_target": 50,
+        "lives": 5
+      },
+      "best_result": {
+        "score": 0,
+        "level": 1,
+        "difficulty": "简单",
+        "timestamp": "2026-04-25 16:21:28"
+      }
     }
   },
   "leaderboard": [
     {
-      "name": "慢慢",
-      "score": 146,
-      "level": 4,
-      "difficulty": "困难",
-      "timestamp": "2026-04-25 16:21:28"
-    },
-    {
       "name": "玩家1",
       "score": 100,
+      "level": 1,
       "difficulty": "困难",
       "timestamp": "2026-04-25 14:58:47"
     },
     {
-      "name": "慢慢",
-      "score": 100,
-      "difficulty": "普通",
-      "timestamp": "2026-04-25 15:16:54"
-    },
-    {
-      "name": "慢慢",
-      "score": 100,
-      "difficulty": "普通",
-      "timestamp": "2026-04-25 15:26:36"
-    },
-    {
-      "name": "慢慢",
-      "score": 100,
-      "difficulty": "困难",
-      "timestamp": "2026-04-25 16:14:43"
-    },
-    {
-      "name": "玩家1",
-      "score": 73,
-      "difficulty": "普通",
-      "timestamp": "2026-04-25 12:44:48"
-    },
-    {
-      "name": "慢慢",
-      "score": 48,
-      "difficulty": "普通",
-      "timestamp": "2026-04-25 16:05:23"
-    },
-    {
-      "name": "慢慢",
-      "score": 47,
-      "difficulty": "困难",
-      "timestamp": "2026-04-25 15:00:03"
-    },
-    {
-      "name": "慢慢",
-      "score": 13,
-      "difficulty": "困难",
-      "timestamp": "2026-04-25 16:06:37"
-    },
-    {
-      "name": "慢慢",
-      "score": 2,
+      "name": "man",
+      "score": 31,
       "level": 1,
-      "difficulty": "困难",
-      "timestamp": "2026-04-25 16:24:30"
+      "difficulty": "简单",
+      "timestamp": "2026-04-26 15:03:47"
+    },
+    {
+      "name": "慢慢",
+      "score": 0,
+      "level": 1,
+      "difficulty": "简单",
+      "timestamp": "2026-04-25 16:21:28"
     }
-  ],
-  "progress": null
+  ]
 }

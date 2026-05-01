@@ -11,6 +11,7 @@ import tkinter as tk
 import wave
 from ctypes import windll
 from pathlib import Path
+from tkinter import messagebox, simpledialog
 
 try:
     import winsound
@@ -24,6 +25,7 @@ BALLOON_RADIUS = 28
 INITIAL_LIVES = 5
 MAX_MISTAKES = 20
 MAX_LEVEL = 100
+LEVEL_TARGET = 50
 MAX_BURST_SHOTS = 5
 
 TICK_MS = 35
@@ -53,8 +55,6 @@ TEXT_MAIN = "#1f2937"
 TEXT_MUTED = "#64748b"
 ACCENT = "#2563eb"
 
-SAVE_SLOTS = ["存档1", "存档2", "存档3"]
-
 DIFFICULTY_SETTINGS = {
     "简单": {"spawn_ms": 1500, "max_balloons": 4, "speed_min": 0.9, "speed_max": 1.6},
     "普通": {"spawn_ms": 1100, "max_balloons": 6, "speed_min": 1.3, "speed_max": 2.2},
@@ -70,6 +70,20 @@ BALLOON_COLORS = [
     "#a78bfa",
     "#f472b6",
 ]
+
+MOJIBAKE_MAP = {
+    "鐜╁1": "玩家1",
+    "鏅€?": "普通",
+    "鍥伴毦": "困难",
+    "绠€鍗?": "简单",
+    "鎱㈡參": "慢慢",
+}
+
+
+def clean_text(value: str, fallback: str = "") -> str:
+    if not isinstance(value, str):
+        return fallback
+    return MOJIBAKE_MAP.get(value, value.strip() or fallback)
 
 
 class SoundManager:
@@ -170,17 +184,18 @@ class BalloonTypingGame:
         self.score_var = tk.StringVar(value="分数 0")
         self.level_var = tk.StringVar(value="关卡 1")
         self.coin_var = tk.StringVar(value="金币 0")
-        self.status_var = tk.StringVar(value="选择难度、名字和存档后开始")
+        self.player_display_var = tk.StringVar(value="玩家：未创建")
+        self.save_name_var = tk.StringVar(value="存档：未创建")
+        self.status_var = tk.StringVar(value="先创建玩家，再开始游戏")
         self.lives_var = tk.StringVar(value=f"失误余量 {INITIAL_LIVES}")
         self.difficulty_var = tk.StringVar(value="普通")
-        self.player_name_var = tk.StringVar(value="玩家1")
-        self.save_slot_var = tk.StringVar(value=SAVE_SLOTS[0])
+        self.player_var = tk.StringVar(value="")
         self.rank_var = tk.StringVar(value="排行榜载入中")
 
         self.score = 0
         self.level = 1
         self.level_score = 0
-        self.level_target = 50
+        self.level_target = LEVEL_TARGET
         self.lives = INITIAL_LIVES
         self.coins = 0
         self.inventory: dict[str, int] = {}
@@ -189,6 +204,10 @@ class BalloonTypingGame:
         self.game_over = False
         self.awaiting_continue = False
         self.result_saved = False
+        self.paused = False
+        self.session_player: str | None = None
+        self.session_best_entry: dict | None = None
+        self.exit_dialog: tk.Toplevel | None = None
         self.tick_after_id = None
         self.spawn_after_id = None
 
@@ -212,76 +231,221 @@ class BalloonTypingGame:
         self.next_balloon_id = 1
 
         self.save_data = self._load_save_data()
-        self._ensure_save_slots()
-        self.player_name_var.set(self.save_data.get("player_name", "玩家1"))
-        self.difficulty_var.set(self.save_data.get("last_difficulty", "普通"))
-        self.coins = int(self.save_data.get("coins", 0))
-        self.inventory = dict(self.save_data.get("inventory", {}))
-        self.coin_var.set(f"金币 {self.coins}")
-        self.save_slot_var.trace_add("write", self._on_slot_changed)
+        self.active_player = self.save_data.get("active_player", "")
+        if self.active_player and self.active_player not in self.save_data["players"]:
+            self.active_player = ""
+        if not self.active_player and self.save_data["players"]:
+            self.active_player = sorted(self.save_data["players"].keys())[0]
+        self.player_var.set(self.active_player)
 
         self._build_ui()
         self._bind_keys()
-        self._refresh_leaderboard()
-        self._draw_scene()
-        self._draw_message("打字打气球", "点击开始后直接按字母键开炮")
+        self._refresh_player_menu()
+        if self.active_player:
+            self._switch_player(self.active_player)
+            self._draw_scene()
+            self._draw_message("打字打气球", "点击开始或读档继续")
+        else:
+            self._refresh_leaderboard()
+            self._draw_scene()
+            self._draw_message("打字打气球", "点击“新建玩家”创建专属存档")
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _load_save_data(self) -> dict:
+        default = {"active_player": "", "players": {}, "leaderboard": []}
+        if not SAVE_FILE.exists():
+            return default
+        try:
+            raw = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return default
+
+        if "players" in raw and isinstance(raw["players"], dict):
+            raw.setdefault("active_player", "")
+            raw["leaderboard"] = self._normalize_leaderboard(raw.get("leaderboard", []))
+            return raw
+
+        players: dict[str, dict] = {}
+        save_slots = raw.get("save_slots", {}) if isinstance(raw.get("save_slots"), dict) else {}
+        slot_profiles = raw.get("slot_profiles", {}) if isinstance(raw.get("slot_profiles"), dict) else {}
+
+        for _, slot_data in save_slots.items():
+            if not isinstance(slot_data, dict):
+                continue
+            player_name = clean_text(slot_data.get("player_name", ""), "")
+            if not player_name:
+                continue
+            player = players.setdefault(
+                player_name,
+                {
+                    "save_name": f"{player_name}的存档",
+                    "difficulty": clean_text(slot_data.get("difficulty", ""), "普通"),
+                    "coins": int(slot_data.get("coins", raw.get("coins", 0))),
+                    "inventory": dict(slot_data.get("inventory", raw.get("inventory", {}))),
+                    "progress": None,
+                    "best_result": None,
+                },
+            )
+            candidate = {
+                "score": int(slot_data.get("score", 0)),
+                "level": int(slot_data.get("level", 1)),
+                "level_score": int(slot_data.get("level_score", 0)),
+                "level_target": int(slot_data.get("level_target", LEVEL_TARGET)),
+                "lives": int(slot_data.get("lives", INITIAL_LIVES)),
+            }
+            current = player.get("progress")
+            if current is None or (candidate["level"], candidate["score"]) > (current["level"], current["score"]):
+                player["progress"] = candidate
+
+        for _, profile in slot_profiles.items():
+            if not isinstance(profile, dict):
+                continue
+            player_name = clean_text(profile.get("player_name", ""), "")
+            if not player_name:
+                continue
+            player = players.setdefault(
+                player_name,
+                {
+                    "save_name": f"{player_name}的存档",
+                    "difficulty": clean_text(profile.get("difficulty", ""), "普通"),
+                    "coins": int(raw.get("coins", 0)),
+                    "inventory": dict(raw.get("inventory", {})),
+                    "progress": None,
+                    "best_result": None,
+                },
+            )
+            player["save_name"] = f"{player_name}的存档"
+            player["difficulty"] = clean_text(profile.get("difficulty", ""), player["difficulty"])
+
+        for item in raw.get("leaderboard", []):
+            if not isinstance(item, dict):
+                continue
+            player_name = clean_text(item.get("name", ""), "")
+            if not player_name:
+                continue
+            entry = {
+                "score": int(item.get("score", 0)),
+                "level": int(item.get("level", 1)),
+                "difficulty": clean_text(item.get("difficulty", ""), "普通"),
+                "timestamp": item.get("timestamp", ""),
+            }
+            player = players.setdefault(
+                player_name,
+                {
+                    "save_name": f"{player_name}的存档",
+                    "difficulty": entry["difficulty"],
+                    "coins": 0,
+                    "inventory": {},
+                    "progress": None,
+                    "best_result": None,
+                },
+            )
+            best = player.get("best_result")
+            if best is None or (entry["level"], entry["score"]) > (best["level"], best["score"]):
+                player["best_result"] = entry
+
+        leaderboard = self._normalize_leaderboard(raw.get("leaderboard", []))
+
+        active_player = clean_text(raw.get("player_name", ""), "")
+        if active_player not in players:
+            active_player = next(iter(players.keys()), "")
+
+        return {"active_player": active_player, "players": players, "leaderboard": leaderboard[:10]}
+
+    def _entry_key(self, item: dict | None) -> tuple[int, int]:
+        if not item:
+            return (-1, -1)
+        return (int(item.get("level", 0)), int(item.get("score", 0)))
+
+    def _normalize_leaderboard(self, entries: list[dict]) -> list[dict]:
+        best_by_player: dict[str, dict] = {}
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            player_name = clean_text(item.get("name", ""), "")
+            if not player_name:
+                continue
+            entry = {
+                "name": player_name,
+                "score": int(item.get("score", 0)),
+                "level": int(item.get("level", 1)),
+                "difficulty": clean_text(item.get("difficulty", ""), "普通"),
+                "timestamp": str(item.get("timestamp", "")),
+            }
+            current = best_by_player.get(player_name)
+            if current is None or self._entry_key(entry) >= self._entry_key(current):
+                best_by_player[player_name] = entry
+        result = list(best_by_player.values())
+        result.sort(key=self._entry_key, reverse=True)
+        return result[:10]
+
+    def _merge_leaderboard_record(self, player_name: str, entry: dict) -> None:
+        record = {"name": player_name, **entry}
+        entries = [item for item in self.save_data.get("leaderboard", []) if item.get("name") != player_name]
+        entries.append(record)
+        self.save_data["leaderboard"] = self._normalize_leaderboard(entries)
+
+    def _write_save_data(self) -> None:
+        self.save_data["active_player"] = self.active_player
+        self.save_data["leaderboard"] = self._normalize_leaderboard(self.save_data.get("leaderboard", []))
+        SAVE_FILE.write_text(json.dumps(self.save_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=BG_TOP, padx=16, pady=16)
         outer.pack()
 
         tk.Label(outer, text="BALLOON TYPE", fg="#0f172a", bg=BG_TOP, font=("Consolas", 24, "bold")).pack(anchor="w")
-        tk.Label(outer, text="多存档继续游戏，排行榜只基于真实结算记录", fg=TEXT_MUTED, bg=BG_TOP, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(0, 10))
+        tk.Label(outer, text="玩家和存档完全绑定，排行榜只看真实结算，但会实时预览当前新高", fg=TEXT_MUTED, bg=BG_TOP, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(0, 10))
 
-        top_bar = tk.Frame(outer, bg=BG_TOP)
-        top_bar.pack(fill="x", pady=(0, 10))
-
-        stats = tk.Frame(top_bar, bg=PANEL_COLOR, padx=12, pady=10, width=860, height=54)
+        row1 = tk.Frame(outer, bg=BG_TOP)
+        row1.pack(fill="x", pady=(0, 8))
+        stats = tk.Frame(row1, bg=PANEL_COLOR, padx=12, pady=10, width=1120, height=54)
         stats.pack(side="left")
         stats.pack_propagate(False)
         tk.Label(stats, textvariable=self.score_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 12, "bold")).pack(side="left", padx=(0, 18))
         tk.Label(stats, textvariable=self.level_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(0, 18))
         tk.Label(stats, textvariable=self.coin_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(0, 18))
         tk.Label(stats, textvariable=self.lives_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11)).pack(side="left", padx=(0, 18))
-        self.status_label = tk.Label(stats, textvariable=self.status_var, fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11), anchor="w", justify="left", width=32)
-        self.status_label.pack(side="left", fill="y")
+        tk.Label(stats, textvariable=self.player_display_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(0, 18))
+        tk.Label(stats, textvariable=self.status_var, fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11), anchor="w", justify="left", width=28).pack(side="left")
 
-        control = tk.Frame(top_bar, bg=BG_TOP, width=760, height=54)
-        control.pack(side="left", padx=(10, 0))
-        control.pack_propagate(False)
+        row2 = tk.Frame(outer, bg=BG_TOP)
+        row2.pack(fill="x", pady=(0, 10))
+        controls = tk.Frame(row2, bg=PANEL_COLOR, padx=12, pady=10, width=1120, height=56)
+        controls.pack(side="left")
+        controls.pack_propagate(False)
 
-        tk.Entry(control, width=10, textvariable=self.player_name_var, justify="center", font=("Microsoft YaHei UI", 10), relief="flat").pack(side="left", padx=(0, 8))
+        self.player_menu = tk.OptionMenu(controls, self.player_var, "")
+        self.player_menu.config(width=10, bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 10))
+        self.player_menu["menu"].config(bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", font=("Microsoft YaHei UI", 10))
+        self.player_menu.pack(side="left", padx=(0, 8))
 
-        diff_option = tk.OptionMenu(control, self.difficulty_var, *DIFFICULTY_SETTINGS.keys())
+        diff_option = tk.OptionMenu(controls, self.difficulty_var, *DIFFICULTY_SETTINGS.keys())
         diff_option.config(width=6, bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 10))
         diff_option["menu"].config(bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", font=("Microsoft YaHei UI", 10))
         diff_option.pack(side="left", padx=(0, 8))
 
-        slot_option = tk.OptionMenu(control, self.save_slot_var, *SAVE_SLOTS)
-        slot_option.config(width=6, bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 10))
-        slot_option["menu"].config(bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", font=("Microsoft YaHei UI", 10))
-        slot_option.pack(side="left", padx=(0, 8))
-
-        self._create_button(control, "开始", self.start_game).pack(side="left")
-        self._create_button(control, "重开", self.restart_game).pack(side="left", padx=8)
-        self.load_button = self._create_button(control, "读档", self.load_progress)
-        self.load_button.pack(side="left", padx=8)
-        self.continue_button = self._create_button(control, "继续", self.continue_level)
-        self.continue_button.pack(side="left", padx=8)
+        self._create_button(controls, "新建玩家", self.create_player_save).pack(side="left", padx=(0, 8))
+        self._create_button(controls, "开始", self.start_game).pack(side="left", padx=(0, 8))
+        self._create_button(controls, "读档", self.load_progress).pack(side="left", padx=(0, 8))
+        self.continue_button = self._create_button(controls, "继续", self.continue_level)
+        self.continue_button.pack(side="left", padx=(0, 8))
         self.continue_button.config(state="disabled")
+        self._create_button(controls, "删除玩家", self.delete_player).pack(side="left", padx=(0, 8))
+        self._create_button(controls, "重开", self.restart_game).pack(side="left", padx=(0, 8))
 
         middle = tk.Frame(outer, bg=BG_TOP)
         middle.pack()
-
         board = tk.Frame(middle, bg=PANEL_COLOR, padx=10, pady=10)
         board.pack(side="left")
         self.canvas = tk.Canvas(board, width=WINDOW_WIDTH, height=WINDOW_HEIGHT, bg="#d7f0ff", highlightthickness=1, highlightbackground="#93c5fd")
         self.canvas.pack()
 
-        side = tk.Frame(middle, bg=PANEL_COLOR, padx=12, pady=12, width=220)
+        side = tk.Frame(middle, bg=PANEL_COLOR, padx=12, pady=12, width=240)
         side.pack(side="left", padx=(12, 0), fill="y")
         side.pack_propagate(False)
+        tk.Label(side, textvariable=self.save_name_var, justify="left", anchor="nw", fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 10, "bold"), wraplength=210).pack(anchor="w", pady=(0, 10))
         tk.Label(side, text="排行榜", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
         tk.Label(side, textvariable=self.rank_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Consolas", 10)).pack(anchor="w", fill="both", expand=True, pady=(10, 0))
 
@@ -297,7 +461,8 @@ class BalloonTypingGame:
 
     def _bind_keys(self) -> None:
         self.root.bind("<Key>", self._handle_keypress)
-        self.root.bind("<Escape>", lambda _event: self.restart_game())
+        self.root.bind("<Escape>", lambda _event: self.request_exit())
+        self.player_var.trace_add("write", self._on_player_changed)
         self.root.focus_force()
 
     def _handle_keypress(self, event: tk.Event) -> None:
@@ -306,6 +471,15 @@ class BalloonTypingGame:
         char = event.char.lower()
         if char in string.ascii_lowercase:
             self.hit_letter(char)
+
+    def _refresh_player_menu(self) -> None:
+        menu = self.player_menu["menu"]
+        menu.delete(0, "end")
+        players = sorted(self.save_data["players"].keys())
+        for player in players:
+            menu.add_command(label=player, command=lambda value=player: self.player_var.set(value))
+        if players and self.player_var.get() not in players:
+            self.player_var.set(players[0])
 
     def _current_config(self) -> dict:
         base = DIFFICULTY_SETTINGS[self.difficulty_var.get()]
@@ -317,146 +491,234 @@ class BalloonTypingGame:
             "speed_max": base["speed_max"] + level_boost * 0.035,
         }
 
-    def _ensure_save_slots(self) -> None:
-        slots = self.save_data.get("save_slots")
-        if not isinstance(slots, dict):
-            slots = {}
-        profiles = self.save_data.get("slot_profiles")
-        if not isinstance(profiles, dict):
-            profiles = {}
-        for slot in SAVE_SLOTS:
-            slots.setdefault(slot, None)
-            profiles.setdefault(slot, {"player_name": "玩家1", "difficulty": "普通"})
-        self.save_data["save_slots"] = slots
-        self.save_data["slot_profiles"] = profiles
+    def _sync_player_display(self) -> None:
+        if not self.active_player:
+            self.player_display_var.set("玩家：未创建")
+            self.save_name_var.set("存档：未创建")
+            return
+        player = self.save_data["players"][self.active_player]
+        self.player_display_var.set(f"玩家：{self.active_player}")
+        self.save_name_var.set(f"存档：{player['save_name']}")
 
-    def _load_save_data(self) -> dict:
-        default = {
-            "player_name": "玩家1",
-            "last_difficulty": "普通",
-            "coins": 0,
-            "inventory": {},
-            "save_slots": {slot: None for slot in SAVE_SLOTS},
-            "slot_profiles": {slot: {"player_name": "玩家1", "difficulty": "普通"} for slot in SAVE_SLOTS},
-            "leaderboard": [],
-        }
-        if not SAVE_FILE.exists():
-            return default
-        try:
-            data = json.loads(SAVE_FILE.read_text(encoding="utf-8"))
-            default.update(data)
-            return default
-        except (json.JSONDecodeError, OSError):
-            return default
+    def _switch_player(self, player_name: str) -> None:
+        if player_name not in self.save_data["players"]:
+            return
+        self.active_player = player_name
+        self.player_var.set(player_name)
+        player = self.save_data["players"][player_name]
+        self.difficulty_var.set(player.get("difficulty", "普通"))
+        self.coins = int(player.get("coins", 0))
+        self.inventory = dict(player.get("inventory", {}))
+        self.coin_var.set(f"金币 {self.coins}")
+        if not self.running and not self.awaiting_continue and not self.game_over:
+            self.session_player = None
+            self.session_best_entry = None
+        self._sync_player_display()
+        self._refresh_leaderboard()
 
-    def _write_save_data(self) -> None:
-        SAVE_FILE.write_text(json.dumps(self.save_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _on_player_changed(self, *_args) -> None:
+        player_name = self.player_var.get()
+        if player_name and player_name != self.active_player:
+            self._switch_player(player_name)
 
-    def _update_slot_profile(self) -> None:
-        slot = self.save_slot_var.get()
-        self.save_data["slot_profiles"][slot] = {
-            "player_name": self.player_name_var.get().strip() or "玩家1",
-            "difficulty": self.difficulty_var.get(),
-        }
+    def _save_player_profile(self) -> None:
+        if not self.active_player:
+            return
+        player = self.save_data["players"].setdefault(
+            self.active_player,
+            {
+                "save_name": f"{self.active_player}的存档",
+                "difficulty": "普通",
+                "coins": 0,
+                "inventory": {},
+                "progress": None,
+                "best_result": None,
+            },
+        )
+        player["save_name"] = f"{self.active_player}的存档"
+        player["difficulty"] = self.difficulty_var.get()
+        player["coins"] = self.coins
+        player["inventory"] = dict(self.inventory)
 
     def _snapshot_progress(self) -> dict:
         return {
-            "player_name": self.player_name_var.get().strip() or "玩家1",
-            "difficulty": self.difficulty_var.get(),
             "score": self.score,
             "level": self.level,
             "level_score": self.level_score,
             "level_target": self.level_target,
-            "coins": self.coins,
             "lives": self.lives,
-            "inventory": dict(self.inventory),
+        }
+
+    def _default_progress(self) -> dict:
+        return {
+            "score": 0,
+            "level": 1,
+            "level_score": 0,
+            "level_target": LEVEL_TARGET,
+            "lives": INITIAL_LIVES,
         }
 
     def _save_progress(self) -> None:
-        slot = self.save_slot_var.get()
-        self.save_data["player_name"] = self.player_name_var.get().strip() or "玩家1"
-        self.save_data["last_difficulty"] = self.difficulty_var.get()
-        self.save_data["coins"] = self.coins
-        self.save_data["inventory"] = dict(self.inventory)
-        self._update_slot_profile()
-        self.save_data["save_slots"][slot] = self._snapshot_progress()
+        if not self.active_player:
+            return
+        self._save_player_profile()
+        self.save_data["players"][self.active_player]["progress"] = self._snapshot_progress()
         self._write_save_data()
 
-    def _clear_progress(self, slot: str | None = None) -> None:
-        target = slot or self.save_slot_var.get()
-        self.save_data["save_slots"][target] = None
+    def _clear_progress(self) -> None:
+        if not self.active_player:
+            return
+        self.save_data["players"][self.active_player]["progress"] = None
         self._write_save_data()
-
-    def _on_slot_changed(self, *_args) -> None:
-        slot = self.save_slot_var.get()
-        progress = self.save_data.get("save_slots", {}).get(slot)
-        profile = self.save_data.get("slot_profiles", {}).get(slot, {})
-        if progress:
-            self.player_name_var.set(progress.get("player_name", profile.get("player_name", "玩家1")))
-            self.difficulty_var.set(progress.get("difficulty", profile.get("difficulty", "普通")))
-        elif profile:
-            self.player_name_var.set(profile.get("player_name", "玩家1"))
-            self.difficulty_var.set(profile.get("difficulty", "普通"))
-        self._refresh_leaderboard()
 
     def _record_result(self) -> None:
-        if self.result_saved:
+        if self.result_saved or not self.active_player:
             return
-        name = self.player_name_var.get().strip() or "玩家1"
         entry = {
-            "name": name,
             "score": self.score,
             "level": self.level,
             "difficulty": self.difficulty_var.get(),
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-
-        best_by_name: dict[str, dict] = {}
-        for item in self.save_data.get("leaderboard", []):
-            item_name = item.get("name", "")
-            if item_name not in best_by_name or (item.get("level", 1), item.get("score", 0)) > (
-                best_by_name[item_name].get("level", 1),
-                best_by_name[item_name].get("score", 0),
-            ):
-                best_by_name[item_name] = item
-
-        if name not in best_by_name or (entry["level"], entry["score"]) >= (
-            best_by_name[name].get("level", 1),
-            best_by_name[name].get("score", 0),
-        ):
-            best_by_name[name] = entry
-
-        leaderboard = list(best_by_name.values())
-        leaderboard.sort(key=lambda item: (item.get("level", 1), item.get("score", 0)), reverse=True)
-        self.save_data["leaderboard"] = leaderboard[:10]
-        self.save_data["player_name"] = name
-        self.save_data["last_difficulty"] = self.difficulty_var.get()
-        self.save_data["coins"] = self.coins
-        self.save_data["inventory"] = dict(self.inventory)
-        self._clear_progress()
+        player = self.save_data["players"][self.active_player]
+        best = player.get("best_result")
+        if best is None or (entry["level"], entry["score"]) >= (best["level"], best["score"]):
+            player["best_result"] = entry
+        self._merge_leaderboard_record(self.active_player, entry)
         self._write_save_data()
         self._refresh_leaderboard()
         self.result_saved = True
 
     def _refresh_leaderboard(self) -> None:
-        leaderboard = self.save_data.get("leaderboard", [])
-        if not leaderboard:
+        entries = self._normalize_leaderboard(self.save_data.get("leaderboard", []))
+        preview_player = self.session_player
+        if preview_player and preview_player in self.save_data["players"] and (self.running or self.awaiting_continue or self.game_over):
+            current_entry = {
+                "name": preview_player,
+                "score": self.score,
+                "level": self.level,
+                "difficulty": self.difficulty_var.get(),
+                "timestamp": "当前",
+            }
+            if (
+                self.session_best_entry is None
+                or self.session_best_entry.get("name") != preview_player
+                or self._entry_key(current_entry) >= self._entry_key(self.session_best_entry)
+            ):
+                self.session_best_entry = current_entry
+            preview_entry = self.session_best_entry
+            global_best = next((item for item in entries if item.get("name") == preview_player), None)
+            if self._entry_key(preview_entry) >= self._entry_key(global_best):
+                entries = [item for item in entries if item.get("name") != preview_player]
+                entries.append(preview_entry)
+        entries.sort(key=self._entry_key, reverse=True)
+        if not entries:
             self.rank_var.set("暂无记录")
             return
         lines = []
-        for index, item in enumerate(leaderboard[:8], start=1):
-            level = item.get("level", 1)
-            lines.append(f"{index:>2}. {item['name'][:6]:<6} L{level:>3}  {item['score']:>3}")
+        for index, item in enumerate(entries[:8], start=1):
+            lines.append(f"{index:>2}. {item['name'][:6]:<6} L{item['level']:>3}  {item['score']:>3}")
         self.rank_var.set("\n".join(lines))
 
+    def create_player_save(self) -> None:
+        player_name = simpledialog.askstring("新建玩家", "输入玩家名字：", parent=self.root)
+        if player_name is None:
+            return
+        player_name = player_name.strip()
+        if not player_name:
+            messagebox.showwarning("名字为空", "请输入有效的玩家名字。", parent=self.root)
+            return
+        if player_name in self.save_data["players"]:
+            messagebox.showerror("名字重复", f"玩家“{player_name}”已存在。", parent=self.root)
+            return
+
+        self.save_data["players"][player_name] = {
+            "save_name": f"{player_name}的存档",
+            "difficulty": self.difficulty_var.get(),
+            "coins": self.coins,
+            "inventory": {},
+            "progress": None,
+            "best_result": None,
+        }
+        self.active_player = player_name
+        self.player_var.set(player_name)
+
+        self.score = 0
+        self.level = 1
+        self.level_score = 0
+        self.level_target = LEVEL_TARGET
+        self.lives = INITIAL_LIVES
+        self.running = False
+        self.game_over = False
+        self.awaiting_continue = False
+        self.result_saved = False
+        self.session_player = None
+        self.session_best_entry = None
+        self.balloons = []
+        self.explosions = []
+        self.smokes = []
+        self.projectiles = []
+        self.pending_shots = []
+        self.next_balloon_id = 1
+        self.cannon_angle = -math.pi / 2
+        self.cannon_target_angle = -math.pi / 2
+        self.cannon_recoil = 0.0
+        self.muzzle_flash_frames = 0
+        self.wheel_spin = 0.0
+
+        self._refresh_player_menu()
+        self._switch_player(player_name)
+        self.session_player = player_name
+        self.session_best_entry = None
+        self._save_progress()
+
+        self.score_var.set("分数 0")
+        self.level_var.set("关卡 1")
+        self.coin_var.set(f"金币 {self.coins}")
+        self.lives_var.set(f"失误余量 {self.lives}")
+        self.status_var.set(f"已创建玩家：{player_name}")
+        self.continue_button.config(state="disabled")
+        self._draw_scene()
+        self._draw_message("玩家已创建", f"{player_name} 的存档已建立，点击开始或读档继续")
+
+    def delete_player(self) -> None:
+        if not self.active_player:
+            self.status_var.set("当前没有可删除的玩家")
+            return
+        if not messagebox.askyesno("删除玩家", f"确定删除玩家“{self.active_player}”及其存档吗？", parent=self.root):
+            return
+
+        deleted = self.active_player
+        self.save_data["players"].pop(deleted, None)
+        if self.active_player == deleted:
+            self.active_player = ""
+        if self.save_data["players"]:
+            self.active_player = sorted(self.save_data["players"].keys())[0]
+        self._write_save_data()
+        self._refresh_player_menu()
+        if self.active_player:
+            self._switch_player(self.active_player)
+        else:
+            self.player_display_var.set("玩家：未创建")
+            self.save_name_var.set("存档：未创建")
+            self.rank_var.set("暂无记录")
+        self.restart_game()
+        self.status_var.set(f"已删除玩家：{deleted}")
+
     def start_game(self) -> None:
-        if self.awaiting_continue:
+        if not self.active_player:
+            self.status_var.set("请先新建玩家")
+            return
+        if self.awaiting_continue and not self.game_over:
+            self.continue_level()
             return
         if self.running:
             return
         if self.game_over:
             self.restart_game()
             return
+        self.session_player = self.active_player
+        self.session_best_entry = None
         self.running = True
         self.status_var.set(f"游戏进行中 {self.difficulty_var.get()}")
         self.sound.play_pattern("start")
@@ -470,6 +732,8 @@ class BalloonTypingGame:
     def continue_level(self) -> None:
         if not self.awaiting_continue or self.game_over:
             return
+        self.session_player = self.active_player
+        self.session_best_entry = None
         self.awaiting_continue = False
         self.running = True
         self.status_var.set(f"游戏进行中 第 {self.level} 关")
@@ -481,29 +745,31 @@ class BalloonTypingGame:
         self._schedule_spawn()
 
     def load_progress(self) -> None:
-        slot = self.save_slot_var.get()
-        progress = self.save_data.get("save_slots", {}).get(slot)
-        if not progress:
-            self.status_var.set(f"{slot} 没有可继续的存档")
+        if not self.active_player:
+            self.status_var.set("请先新建玩家")
             return
+        progress = self.save_data["players"][self.active_player].get("progress")
+        if not progress:
+            progress = self._default_progress()
+            self.save_data["players"][self.active_player]["progress"] = progress
+            self._write_save_data()
 
         self._cancel_timers()
         self.sound.stop_bgm()
-
-        self.player_name_var.set(progress.get("player_name", "玩家1"))
-        self.difficulty_var.set(progress.get("difficulty", "普通"))
         self.score = int(progress.get("score", 0))
         self.level = int(progress.get("level", 1))
         self.level_score = int(progress.get("level_score", 0))
-        self.level_target = int(progress.get("level_target", 50))
-        self.coins = int(progress.get("coins", 0))
+        self.level_target = int(progress.get("level_target", LEVEL_TARGET))
         self.lives = int(progress.get("lives", INITIAL_LIVES))
-        self.inventory = dict(progress.get("inventory", {}))
+        self.coins = int(self.save_data["players"][self.active_player].get("coins", 0))
+        self.inventory = dict(self.save_data["players"][self.active_player].get("inventory", {}))
 
         self.running = False
         self.game_over = False
-        self.result_saved = False
         self.awaiting_continue = True
+        self.session_player = self.active_player
+        self.session_best_entry = None
+        self.result_saved = False
         self.balloons = []
         self.explosions = []
         self.smokes = []
@@ -519,11 +785,11 @@ class BalloonTypingGame:
         self.level_var.set(f"关卡 {self.level}")
         self.coin_var.set(f"金币 {self.coins}")
         self.lives_var.set(f"失误余量 {self.lives}")
-        self.status_var.set(f"已读取 {slot}，点击继续恢复游戏")
+        self.status_var.set(f"已读取 {self.active_player} 的存档，点击继续恢复游戏")
         self.continue_button.config(state="normal")
         self._refresh_leaderboard()
         self._draw_scene()
-        self._draw_message(f"继续第 {self.level} 关", f"{slot} 当前金币 {self.coins}，本关进度 {self.level_score}/{self.level_target}")
+        self._draw_message(f"继续第 {self.level} 关", f"{self.active_player} 当前金币 {self.coins}，本关进度 {self.level_score}/{self.level_target}")
 
     def restart_game(self) -> None:
         self._cancel_timers()
@@ -531,12 +797,12 @@ class BalloonTypingGame:
         self.score = 0
         self.level = 1
         self.level_score = 0
-        self.level_target = 50
+        self.level_target = LEVEL_TARGET
         self.lives = INITIAL_LIVES
         self.running = False
         self.game_over = False
-        self.result_saved = False
         self.awaiting_continue = False
+        self.result_saved = False
         self.balloons = []
         self.explosions = []
         self.smokes = []
@@ -553,14 +819,11 @@ class BalloonTypingGame:
         self.level_var.set("关卡 1")
         self.coin_var.set(f"金币 {self.coins}")
         self.lives_var.set(f"失误余量 {self.lives}")
-        self.status_var.set("选择难度、名字和存档后开始")
-        self._update_slot_profile()
-        self.save_data["player_name"] = self.player_name_var.get().strip() or "玩家1"
-        self.save_data["last_difficulty"] = self.difficulty_var.get()
-        self.save_data["coins"] = self.coins
-        self.save_data["inventory"] = dict(self.inventory)
-        self._clear_progress()
-        self._write_save_data()
+        self.status_var.set("请选择玩家后开始")
+        if self.active_player:
+            self._clear_progress()
+            self._save_player_profile()
+            self._write_save_data()
         self.continue_button.config(state="disabled")
         self._draw_scene()
         self._draw_message("打字打气球", "点击开始后直接按字母键开炮")
@@ -571,7 +834,6 @@ class BalloonTypingGame:
         if len(self.pending_shots) + len(self.projectiles) >= MAX_BURST_SHOTS:
             self.status_var.set(f"连发队列已满，最多 {MAX_BURST_SHOTS} 发")
             return
-
         target = next((balloon for balloon in self.balloons if balloon["letter"] == letter and not balloon["targeted"]), None)
         if target is None:
             if any(balloon["letter"] == letter and balloon["targeted"] for balloon in self.balloons):
@@ -627,17 +889,7 @@ class BalloonTypingGame:
             speed = random.uniform(config["speed_min"], config["speed_max"])
             existing_letters = {balloon["letter"] for balloon in self.balloons}
             choices = [ch for ch in string.ascii_lowercase if ch not in existing_letters]
-            self.balloons.append(
-                {
-                    "id": self.next_balloon_id,
-                    "x": x,
-                    "y": y,
-                    "speed": speed,
-                    "letter": random.choice(choices or list(string.ascii_lowercase)),
-                    "color": random.choice(BALLOON_COLORS),
-                    "targeted": False,
-                }
-            )
+            self.balloons.append({"id": self.next_balloon_id, "x": x, "y": y, "speed": speed, "letter": random.choice(choices or list(string.ascii_lowercase)), "color": random.choice(BALLOON_COLORS), "targeted": False})
             self.next_balloon_id += 1
         self._schedule_spawn()
 
@@ -779,7 +1031,7 @@ class BalloonTypingGame:
         self.coins += 1
         self.level += 1
         self.level_score = 0
-        self.level_target = 50
+        self.level_target = LEVEL_TARGET
         self.lives = min(MAX_MISTAKES, self.lives + 1)
         self.level_var.set(f"关卡 {self.level}")
         self.coin_var.set(f"金币 {self.coins}")
@@ -903,9 +1155,7 @@ class BalloonTypingGame:
 
     def _draw_projectiles(self) -> None:
         for projectile in self.projectiles:
-            x = projectile["x"]
-            y = projectile["y"]
-            self.canvas.create_oval(x - 8, y - 8, x + 8, y + 8, fill="#111827", outline="#f8fafc", width=1)
+            self.canvas.create_oval(projectile["x"] - 8, projectile["y"] - 8, projectile["x"] + 8, projectile["y"] + 8, fill="#111827", outline="#f8fafc", width=1)
 
     def _get_cannon_pivot(self) -> tuple[float, float]:
         dir_x = math.cos(self.cannon_angle)
@@ -956,12 +1206,83 @@ class BalloonTypingGame:
         self.canvas.create_rectangle(left, top, right, bottom, fill="#ffffff", outline="#60a5fa", width=3)
         self.canvas.create_text(WINDOW_WIDTH // 2, top + 52, text=title, fill="#1d4ed8", font=("Microsoft YaHei UI", 24, "bold"), width=right - left - 40)
         self.canvas.create_text(WINDOW_WIDTH // 2, top + 106, text=subtitle, fill=TEXT_MAIN, font=("Microsoft YaHei UI", 12), width=right - left - 40)
-        self.canvas.create_text(WINDOW_WIDTH // 2, top + 148, text=f"当前槽位：{self.save_slot_var.get()} | 金币：{self.coins}", fill=TEXT_MUTED, font=("Microsoft YaHei UI", 10), width=right - left - 40)
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 148, text=f"玩家：{self.active_player or '未选择'} | 金币：{self.coins}", fill=TEXT_MUTED, font=("Microsoft YaHei UI", 10), width=right - left - 40)
 
-    def _on_close(self) -> None:
+    def request_exit(self) -> None:
+        if self.exit_dialog is not None and self.exit_dialog.winfo_exists():
+            self.exit_dialog.lift()
+            self.exit_dialog.focus_force()
+            return
+
+        dialog = tk.Toplevel(self.root)
+        self.exit_dialog = dialog
+        dialog.title("退出游戏")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.configure(bg=PANEL_COLOR)
+        dialog.geometry("480x200")
+
+        tk.Label(
+            dialog,
+            text="是否退出当前游戏？",
+            bg=PANEL_COLOR,
+            fg=TEXT_MAIN,
+            font=("Microsoft YaHei UI", 13, "bold"),
+            pady=18,
+        ).pack()
+        tk.Label(
+            dialog,
+            text="你可以选择保存当前存档后退出，直接退出，或取消继续游戏。",
+            bg=PANEL_COLOR,
+            fg=TEXT_MUTED,
+            font=("Microsoft YaHei UI", 10),
+            wraplength=420,
+            justify="center",
+        ).pack()
+
+        button_row = tk.Frame(dialog, bg=PANEL_COLOR, pady=20)
+        button_row.pack(fill="x")
+
+        def close_dialog() -> None:
+            if dialog.winfo_exists():
+                dialog.grab_release()
+                dialog.destroy()
+            self.exit_dialog = None
+
+        def save_and_exit() -> None:
+            if self.active_player:
+                self._save_progress()
+                self._write_save_data()
+            close_dialog()
+            self._force_close()
+
+        def exit_without_save() -> None:
+            close_dialog()
+            self._force_close()
+
+        def cancel_exit() -> None:
+            close_dialog()
+            self.root.focus_force()
+
+        tk.Button(button_row, text="保存并退出", command=save_and_exit, width=12, bg=ACCENT, fg="white", activebackground="#1d4ed8", activeforeground="white", relief="flat", bd=0, font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2").pack(side="left", padx=12)
+        tk.Button(button_row, text="直接退出", command=exit_without_save, width=12, bg="#475569", fg="white", activebackground="#334155", activeforeground="white", relief="flat", bd=0, font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2").pack(side="left", padx=12)
+        tk.Button(button_row, text="取消", command=cancel_exit, width=12, bg="#94a3b8", fg="#0f172a", activebackground="#cbd5e1", activeforeground="#0f172a", relief="flat", bd=0, font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2").pack(side="left", padx=12)
+
+        dialog.protocol("WM_DELETE_WINDOW", cancel_exit)
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"480x200+{x}+{y}")
+        dialog.focus_force()
+
+    def _force_close(self) -> None:
         self._cancel_timers()
         self.sound.stop_bgm()
         self.root.destroy()
+
+    def _on_close(self) -> None:
+        self.request_exit()
 
 
 def main() -> None:
