@@ -31,14 +31,14 @@
     "玩家1": {
       "save_name": "玩家1的存档",
       "difficulty": "困难",
-      "coins": 928,
+      "coins": 939,
       "inventory": {
         "cannons_owned": [
           "normal",
           "rainbow",
           "diamond"
         ],
-        "equipped_cannon": "rainbow",
+        "equipped_cannon": "diamond",
         "decorations_owned": [
           "flower",
           "leaf"
@@ -49,11 +49,13 @@
         "consumables": {}
       },
       "progress": {
-        "score": 267,
-        "level": 6,
-        "level_score": 24,
+        "score": 293,
+        "level": 7,
+        "level_score": 0,
         "level_target": 50,
-        "lives": 3
+        "lives": 4,
+        "combo": 26,
+        "perfect_level": true
       },
       "best_result": {
         "score": 100,

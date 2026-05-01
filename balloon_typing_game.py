@@ -40,6 +40,13 @@ MAX_MISTAKES = 20
 MAX_LEVEL = 100
 LEVEL_TARGET = 50
 MAX_BURST_SHOTS = 5
+COMBO_SMALL_STEP = 10
+COMBO_BIG_STEP = 25
+COMBO_SMALL_REWARD = 1
+COMBO_BIG_REWARD = 3
+PERFECT_LEVEL_REWARD = 5
+MILESTONE_5_REWARD = 3
+MILESTONE_10_REWARD = 8
 
 TICK_MS = 35
 EXPLOSION_DURATION = 20
@@ -211,6 +218,8 @@ class BalloonTypingGame:
         self.level_target = LEVEL_TARGET
         self.lives = INITIAL_LIVES
         self.coins = 0
+        self.combo = 0
+        self.perfect_level = True
         self.inventory: dict = create_default_inventory()
         self.equipped_cannon = DEFAULT_CANNON_ID
 
@@ -635,6 +644,8 @@ class BalloonTypingGame:
             "level_score": self.level_score,
             "level_target": self.level_target,
             "lives": self.lives,
+            "combo": self.combo,
+            "perfect_level": self.perfect_level,
         }
 
     def _default_progress(self) -> dict:
@@ -644,6 +655,8 @@ class BalloonTypingGame:
             "level_score": 0,
             "level_target": LEVEL_TARGET,
             "lives": INITIAL_LIVES,
+            "combo": 0,
+            "perfect_level": True,
         }
 
     def _save_progress(self) -> None:
@@ -676,6 +689,27 @@ class BalloonTypingGame:
         self._write_save_data()
         self._refresh_leaderboard()
         self.result_saved = True
+
+    def _add_coins(self, amount: int, reason: str) -> str:
+        if amount <= 0:
+            return ""
+        self.coins += amount
+        self.coin_var.set(f"金币 {self.coins}")
+        return f"{reason}+{amount}金币"
+
+    def _register_hits(self, hit_count: int) -> list[str]:
+        rewards = []
+        for _ in range(hit_count):
+            self.combo += 1
+            if self.combo % COMBO_BIG_STEP == 0:
+                rewards.append(self._add_coins(COMBO_BIG_REWARD, f"{self.combo}连击"))
+            elif self.combo % COMBO_SMALL_STEP == 0:
+                rewards.append(self._add_coins(COMBO_SMALL_REWARD, f"{self.combo}连击"))
+        return [reward for reward in rewards if reward]
+
+    def _break_combo_and_perfect(self) -> None:
+        self.combo = 0
+        self.perfect_level = False
 
     def _refresh_leaderboard(self) -> None:
         entries = self._normalize_leaderboard(self.save_data.get("leaderboard", []))
@@ -858,7 +892,8 @@ class BalloonTypingGame:
         targets = list(self.balloons)
         if not targets:
             return
-        self._apply_balloon_hits(targets, reason)
+        if self._apply_balloon_hits(targets, reason):
+            return
         self.projectiles = []
         self.pending_shots = []
         self._save_progress()
@@ -873,10 +908,14 @@ class BalloonTypingGame:
             self.smokes.append({"x": target["x"], "y": target["y"], "frame": 0})
         self.sound.play_effect_now(EXPLOSION_SOUND_FILE, fallback_name="lose")
         hit_count = len(target_ids)
+        reward_notes = self._register_hits(hit_count)
         self.score += hit_count
         self.level_score += hit_count
         self.score_var.set(f"分数 {self.score}")
-        self.status_var.set(f"{reason}，击破 {hit_count} 个气球")
+        status = f"{reason}，击破 {hit_count} 个气球"
+        if reward_notes:
+            status += "；" + "，".join(reward_notes)
+        self.status_var.set(status)
         self.balloons = [balloon for balloon in self.balloons if balloon["id"] not in target_ids]
         self.projectiles = [projectile for projectile in self.projectiles if projectile["target_id"] not in target_ids]
         self.pending_shots = [shot for shot in self.pending_shots if shot["target_id"] not in target_ids]
@@ -917,6 +956,8 @@ class BalloonTypingGame:
         self.level_score = 0
         self.level_target = LEVEL_TARGET
         self.lives = INITIAL_LIVES
+        self.combo = 0
+        self.perfect_level = True
         self.running = False
         self.game_over = False
         self.awaiting_continue = False
@@ -1072,6 +1113,8 @@ class BalloonTypingGame:
         self.level_score = int(progress.get("level_score", 0))
         self.level_target = int(progress.get("level_target", LEVEL_TARGET))
         self.lives = int(progress.get("lives", INITIAL_LIVES))
+        self.combo = int(progress.get("combo", 0))
+        self.perfect_level = bool(progress.get("perfect_level", True))
         self.coins = int(self.save_data["players"][self.active_player].get("coins", 0))
         self.inventory = normalize_inventory(self.save_data["players"][self.active_player].get("inventory", {}))
         self.equipped_cannon = self.inventory["equipped_cannon"]
@@ -1115,6 +1158,8 @@ class BalloonTypingGame:
         self.level_score = 0
         self.level_target = LEVEL_TARGET
         self.lives = INITIAL_LIVES
+        self.combo = 0
+        self.perfect_level = True
         self.running = False
         self.game_over = False
         self.awaiting_continue = False
@@ -1159,9 +1204,10 @@ class BalloonTypingGame:
                 return
             self.score -= 1
             self.lives -= 1
+            self._break_combo_and_perfect()
             self.score_var.set(f"分数 {self.score}")
             self.lives_var.set(f"失误余量 {self.lives}")
-            self.status_var.set(f"按错了字母 {letter.upper()}")
+            self.status_var.set(f"按错了字母 {letter.upper()}，连击中断")
             self.sound.play_pattern("wrong")
             self._refresh_leaderboard()
             if self.lives <= 0:
@@ -1288,8 +1334,9 @@ class BalloonTypingGame:
 
         if escaped:
             self.lives -= escaped
+            self._break_combo_and_perfect()
             self.lives_var.set(f"失误余量 {self.lives}")
-            self.status_var.set(f"有 {escaped} 个气球飞走了")
+            self.status_var.set(f"有 {escaped} 个气球飞走了，连击中断")
             self._refresh_leaderboard()
             if self.lives <= 0:
                 self._end_game("气球飞走太多，游戏结束")
@@ -1344,19 +1391,33 @@ class BalloonTypingGame:
         self._draw_message("挑战成功", "你已经完成 100 关")
 
     def _advance_level(self) -> None:
-        if self.level >= MAX_LEVEL:
-            self.status_var.set("已完成第 100 关")
+        completed_level = self.level
+        reward_notes = [self._add_coins(1, "过关")]
+        if self.perfect_level:
+            reward_notes.append(self._add_coins(PERFECT_LEVEL_REWARD, "完美关卡"))
+        if completed_level % 10 == 0:
+            reward_notes.append(self._add_coins(MILESTONE_10_REWARD, "10关奖励"))
+        elif completed_level % 5 == 0:
+            reward_notes.append(self._add_coins(MILESTONE_5_REWARD, "5关奖励"))
+        reward_notes = [note for note in reward_notes if note]
+        reward_text = "，".join(reward_notes)
+
+        if completed_level >= MAX_LEVEL:
+            self.status_var.set(f"已完成第 {MAX_LEVEL} 关，{reward_text}")
+            self._save_player_profile()
+            self._write_save_data()
             self._win_game()
             return
-        self.coins += 1
+
         self.level += 1
         self.level_score = 0
         self.level_target = LEVEL_TARGET
         self.lives = min(MAX_MISTAKES, self.lives + 1)
+        self.perfect_level = True
         self.level_var.set(f"关卡 {self.level}")
         self.coin_var.set(f"金币 {self.coins}")
         self.lives_var.set(f"失误余量 {self.lives}")
-        self.status_var.set(f"已通过上一关，点击继续进入第 {self.level} 关")
+        self.status_var.set(f"已通过第 {completed_level} 关，{reward_text}，点击继续进入第 {self.level} 关")
         self.balloons = []
         self.explosions = []
         self.smokes = []
@@ -1371,7 +1432,7 @@ class BalloonTypingGame:
         self.continue_button.config(state="normal")
         self._cancel_timers()
         self._draw_scene()
-        self._draw_message(f"第 {self.level} 关", f"奖励 1 金币，点击继续开始，本关需命中 {self.level_target} 个字母")
+        self._draw_message(f"第 {self.level} 关", f"{reward_text}；点击继续开始，本关需命中 {self.level_target} 个字母")
 
     def _end_game(self, reason: str) -> None:
         self.running = False
@@ -1417,6 +1478,7 @@ class BalloonTypingGame:
     def _draw_ground(self) -> None:
         self.canvas.create_rectangle(0, WINDOW_HEIGHT - GROUND_HEIGHT, WINDOW_WIDTH, WINDOW_HEIGHT, fill="#86efac", outline="")
         self.canvas.create_text(120, WINDOW_HEIGHT - 34, text=f"当前难度 {self.difficulty_var.get()}", fill="#166534", font=("Microsoft YaHei UI", 12, "bold"))
+        self.canvas.create_text(300, WINDOW_HEIGHT - 34, text=f"连击 {self.combo}", fill="#166534", font=("Microsoft YaHei UI", 12, "bold"))
         self.canvas.create_text(WINDOW_WIDTH - 180, WINDOW_HEIGHT - 34, text=f"第 {self.level} 关 {self.level_score}/{self.level_target}", fill="#166534", font=("Microsoft YaHei UI", 12, "bold"))
         self.canvas.create_text(WINDOW_WIDTH - 50, WINDOW_HEIGHT - 34, text=f"总分 {self.score}", fill="#166534", font=("Microsoft YaHei UI", 12, "bold"))
 
