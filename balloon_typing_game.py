@@ -64,16 +64,22 @@ else:
     RESOURCE_DIR = APP_DIR
 
 ASSETS_DIR = RESOURCE_DIR / "assets"
+GAME_UI_DIR = ASSETS_DIR / "game_ui"
 MUSIC_FILE = ASSETS_DIR / "be_chillin.mp3"
 FIRE_SOUND_FILE = ASSETS_DIR / "cannon_fire.wav"
 EXPLOSION_SOUND_FILE = ASSETS_DIR / "shell_explosion.wav"
 SAVE_FILE = APP_DIR / "balloon_typing_save.json"
 
+APP_BG = "#0b1220"
 BG_TOP = "#d7f0ff"
-PANEL_COLOR = "#ffffff"
-TEXT_MAIN = "#1f2937"
-TEXT_MUTED = "#64748b"
-ACCENT = "#2563eb"
+PANEL_COLOR = "#172033"
+PANEL_SOFT = "#21314f"
+PANEL_EDGE = "#f59e0b"
+TEXT_MAIN = "#f8fafc"
+TEXT_MUTED = "#bfdbfe"
+ACCENT = "#38bdf8"
+ACCENT_GREEN = "#22c55e"
+ACCENT_DANGER = "#ef4444"
 
 DIFFICULTY_SETTINGS = {
     "简单": {"spawn_ms": 1500, "max_balloons": 4, "speed_min": 0.9, "speed_max": 1.6},
@@ -197,7 +203,7 @@ class SoundManager:
 class BalloonTypingGame:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("打字打气球")
+        self.root.title("气球炮手训练营")
         self.root.resizable(False, False)
         self.root.configure(bg=BG_TOP)
 
@@ -247,7 +253,9 @@ class BalloonTypingGame:
         self.skills = SkillManager()
         self.skill_var = tk.StringVar(value="技能：无")
         self.decoration_images: dict[str, tk.PhotoImage] = {}
+        self.ui_images: dict[str, tk.PhotoImage] = {}
         self._load_decoration_images()
+        self._load_ui_images()
 
         self.cannon_x = WINDOW_WIDTH // 2
         self.carriage_y = WINDOW_HEIGHT - GROUND_HEIGHT + 22
@@ -431,67 +439,76 @@ class BalloonTypingGame:
         SAVE_FILE.write_text(json.dumps(self.save_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _build_ui(self) -> None:
-        outer = tk.Frame(self.root, bg=BG_TOP, padx=16, pady=16)
+        self.root.configure(bg=APP_BG)
+        outer = tk.Frame(self.root, bg=APP_BG, padx=16, pady=14)
         outer.pack()
 
-        tk.Label(outer, text="BALLOON TYPE", fg="#0f172a", bg=BG_TOP, font=("Consolas", 24, "bold")).pack(anchor="w")
-        tk.Label(outer, text="玩家和存档完全绑定，排行榜只看真实结算，但会实时预览当前新高", fg=TEXT_MUTED, bg=BG_TOP, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(0, 10))
+        title_bar = tk.Frame(outer, bg="#111c31", padx=14, pady=10, highlightbackground=PANEL_EDGE, highlightthickness=2)
+        title_bar.pack(fill="x", pady=(0, 10))
+        if "star" in self.ui_images:
+            tk.Label(title_bar, image=self.ui_images["star"], bg="#111c31").pack(side="left", padx=(0, 10))
+        title_text = tk.Frame(title_bar, bg="#111c31")
+        title_text.pack(side="left", fill="x", expand=True)
+        tk.Label(title_text, text="气球炮手训练营", fg="#fde68a", bg="#111c31", font=("Microsoft YaHei UI", 23, "bold")).pack(anchor="w")
+        tk.Label(title_text, text="键盘瞄准 · 大炮连发 · 技能清场 · 金币养成", fg=TEXT_MUTED, bg="#111c31", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        tk.Label(title_bar, textvariable=self.status_var, fg="#fef3c7", bg="#111c31", font=("Microsoft YaHei UI", 11, "bold"), anchor="e", justify="right", wraplength=360).pack(side="right", fill="x")
 
-        row1 = tk.Frame(outer, bg=BG_TOP)
+        row1 = tk.Frame(outer, bg=APP_BG)
         row1.pack(fill="x", pady=(0, 8))
-        stats = tk.Frame(row1, bg=PANEL_COLOR, padx=12, pady=10, width=1120, height=54)
+        stats = tk.Frame(row1, bg=APP_BG, width=1120, height=72)
         stats.pack(side="left")
         stats.pack_propagate(False)
-        tk.Label(stats, textvariable=self.score_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 12, "bold")).pack(side="left", padx=(0, 18))
-        tk.Label(stats, textvariable=self.level_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(0, 18))
-        tk.Label(stats, textvariable=self.coin_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(0, 18))
-        tk.Label(stats, textvariable=self.lives_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11)).pack(side="left", padx=(0, 18))
-        tk.Label(stats, textvariable=self.player_display_var, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(0, 18))
-        tk.Label(stats, textvariable=self.status_var, fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 11), anchor="w", justify="left", width=28).pack(side="left")
+        self._create_hud_chip(stats, "SCORE", self.score_var, ACCENT_GREEN, 144).pack(side="left", padx=(0, 8), fill="y")
+        self._create_hud_chip(stats, "LEVEL", self.level_var, "#60a5fa", 144).pack(side="left", padx=(0, 8), fill="y")
+        self._create_hud_chip(stats, "COINS", self.coin_var, "#facc15", 144).pack(side="left", padx=(0, 8), fill="y")
+        self._create_hud_chip(stats, "LIVES", self.lives_var, "#fb7185", 154).pack(side="left", padx=(0, 8), fill="y")
+        self._create_hud_chip(stats, "PLAYER", self.player_display_var, "#a78bfa", 310).pack(side="left", padx=(0, 8), fill="y")
+        self._create_hud_chip(stats, "SAVE", self.save_name_var, ACCENT, 292).pack(side="left", fill="y")
 
-        row2 = tk.Frame(outer, bg=BG_TOP)
+        row2 = tk.Frame(outer, bg=APP_BG)
         row2.pack(fill="x", pady=(0, 10))
-        controls = tk.Frame(row2, bg=PANEL_COLOR, padx=12, pady=10, width=1120, height=56)
+        controls = tk.Frame(row2, bg="#111c31", padx=12, pady=10, width=1120, height=58, highlightbackground="#334155", highlightthickness=1)
         controls.pack(side="left")
         controls.pack_propagate(False)
 
         self.player_menu = tk.OptionMenu(controls, self.player_var, "")
-        self.player_menu.config(width=10, bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 10))
-        self.player_menu["menu"].config(bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", font=("Microsoft YaHei UI", 10))
+        self._style_option_menu(self.player_menu, 10)
         self.player_menu.pack(side="left", padx=(0, 8))
 
         diff_option = tk.OptionMenu(controls, self.difficulty_var, *DIFFICULTY_SETTINGS.keys())
-        diff_option.config(width=6, bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", relief="flat", highlightthickness=0, font=("Microsoft YaHei UI", 10))
-        diff_option["menu"].config(bg="#1f2937", fg="white", activebackground="#334155", activeforeground="white", font=("Microsoft YaHei UI", 10))
+        self._style_option_menu(diff_option, 6)
         diff_option.pack(side="left", padx=(0, 8))
 
-        self._create_button(controls, "新建玩家", self.create_player_save).pack(side="left", padx=(0, 8))
-        self._create_button(controls, "商店", self.open_shop).pack(side="left", padx=(0, 8))
-        self._create_button(controls, "背包", self.open_backpack).pack(side="left", padx=(0, 8))
-        self._create_button(controls, "开始", self.start_game).pack(side="left", padx=(0, 8))
-        self._create_button(controls, "读档", self.load_progress).pack(side="left", padx=(0, 8))
-        self.continue_button = self._create_button(controls, "继续", self.continue_level)
+        self._create_button(controls, "新建玩家", self.create_player_save, "yellow").pack(side="left", padx=(0, 6))
+        self._create_button(controls, "商店", self.open_shop, "yellow").pack(side="left", padx=(0, 6))
+        self._create_button(controls, "背包", self.open_backpack, "blue").pack(side="left", padx=(0, 6))
+        self._create_button(controls, "开始", self.start_game, "green").pack(side="left", padx=(0, 6))
+        self._create_button(controls, "读档", self.load_progress, "blue").pack(side="left", padx=(0, 6))
+        self.continue_button = self._create_button(controls, "继续", self.continue_level, "green")
         self.continue_button.pack(side="left", padx=(0, 8))
         self.continue_button.config(state="disabled")
-        self._create_button(controls, "暂停", self.toggle_pause).pack(side="left", padx=(0, 8))
-        self._create_button(controls, "删除玩家", self.delete_player).pack(side="left", padx=(0, 8))
-        self._create_button(controls, "重开", self.restart_game).pack(side="left", padx=(0, 8))
+        self._create_button(controls, "暂停", self.toggle_pause, "blue").pack(side="left", padx=(0, 6))
+        self._create_button(controls, "删除玩家", self.delete_player, "red").pack(side="left", padx=(0, 6))
+        self._create_button(controls, "重开", self.restart_game, "red").pack(side="left", padx=(0, 6))
 
-        middle = tk.Frame(outer, bg=BG_TOP)
+        middle = tk.Frame(outer, bg=APP_BG)
         middle.pack()
-        board = tk.Frame(middle, bg=PANEL_COLOR, padx=10, pady=10)
+        board = tk.Frame(middle, bg="#111c31", padx=10, pady=10, highlightbackground=PANEL_EDGE, highlightthickness=2)
         board.pack(side="left")
-        self.canvas = tk.Canvas(board, width=WINDOW_WIDTH, height=WINDOW_HEIGHT, bg="#d7f0ff", highlightthickness=1, highlightbackground="#93c5fd")
+        self.canvas = tk.Canvas(board, width=WINDOW_WIDTH, height=WINDOW_HEIGHT, bg="#d7f0ff", highlightthickness=0)
         self.canvas.pack()
 
-        side = tk.Frame(middle, bg=PANEL_COLOR, padx=12, pady=12, width=240)
+        side = tk.Frame(middle, bg="#111c31", padx=12, pady=12, width=240, highlightbackground="#334155", highlightthickness=1)
         side.pack(side="left", padx=(12, 0), fill="y")
         side.pack_propagate(False)
-        tk.Label(side, textvariable=self.save_name_var, justify="left", anchor="nw", fg=ACCENT, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 10, "bold"), wraplength=210).pack(anchor="w", pady=(0, 10))
-        tk.Label(side, text="技能", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
-        tk.Label(side, textvariable=self.skill_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Consolas", 9), wraplength=210).pack(anchor="w", fill="x", pady=(8, 12))
-        tk.Label(side, text="排行榜", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 14, "bold")).pack(anchor="w")
-        tk.Label(side, textvariable=self.rank_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Consolas", 10)).pack(anchor="w", fill="both", expand=True, pady=(10, 0))
+        self._create_side_title(side, "技能槽 1-9").pack(anchor="w", fill="x")
+        skill_panel = tk.Frame(side, bg=PANEL_SOFT, padx=10, pady=10, highlightbackground="#475569", highlightthickness=1)
+        skill_panel.pack(anchor="w", fill="x", pady=(8, 14))
+        tk.Label(skill_panel, textvariable=self.skill_var, justify="left", anchor="nw", fg=TEXT_MAIN, bg=PANEL_SOFT, font=("Consolas", 9), wraplength=198).pack(anchor="w", fill="x")
+        self._create_side_title(side, "全局排行榜").pack(anchor="w", fill="x")
+        rank_panel = tk.Frame(side, bg=PANEL_SOFT, padx=10, pady=10, highlightbackground="#475569", highlightthickness=1)
+        rank_panel.pack(anchor="w", fill="both", expand=True, pady=(8, 0))
+        tk.Label(rank_panel, textvariable=self.rank_var, justify="left", anchor="nw", fg="#e0f2fe", bg=PANEL_SOFT, font=("Consolas", 10, "bold")).pack(anchor="w", fill="both", expand=True)
 
         self.root.update_idletasks()
         fixed_width = self.root.winfo_width()
@@ -500,8 +517,45 @@ class BalloonTypingGame:
         self.root.minsize(fixed_width, fixed_height)
         self.root.maxsize(fixed_width, fixed_height)
 
-    def _create_button(self, parent: tk.Widget, text: str, command) -> tk.Button:
-        return tk.Button(parent, text=text, command=command, width=10, bg=ACCENT, fg="white", activebackground="#1d4ed8", activeforeground="white", relief="flat", bd=0, font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2")
+    def _create_hud_chip(self, parent: tk.Widget, title: str, value: tk.StringVar, accent: str, width: int) -> tk.Frame:
+        chip = tk.Frame(parent, bg=PANEL_COLOR, padx=8, pady=6, width=width, highlightbackground=accent, highlightthickness=2)
+        chip.pack_propagate(False)
+        tk.Label(chip, text=title, fg=accent, bg=PANEL_COLOR, font=("Consolas", 8, "bold")).pack(anchor="w")
+        tk.Label(chip, textvariable=value, fg=TEXT_MAIN, bg=PANEL_COLOR, font=("Microsoft YaHei UI", 10, "bold"), anchor="w", wraplength=width - 18).pack(anchor="w", fill="x")
+        return chip
+
+    def _create_side_title(self, parent: tk.Widget, text: str) -> tk.Label:
+        return tk.Label(parent, text=text, fg="#fde68a", bg="#111c31", font=("Microsoft YaHei UI", 14, "bold"))
+
+    def _style_option_menu(self, menu: tk.OptionMenu, width: int) -> None:
+        menu.config(width=width, bg=PANEL_SOFT, fg=TEXT_MAIN, activebackground="#334155", activeforeground=TEXT_MAIN, relief="flat", highlightthickness=1, highlightbackground=PANEL_EDGE, font=("Microsoft YaHei UI", 10, "bold"))
+        menu["menu"].config(bg=PANEL_SOFT, fg=TEXT_MAIN, activebackground="#334155", activeforeground=TEXT_MAIN, font=("Microsoft YaHei UI", 10))
+
+    def _create_button(self, parent: tk.Widget, text: str, command, variant: str = "blue") -> tk.Button:
+        image = self.ui_images.get(f"button_{variant}") or self.ui_images.get("button_blue")
+        if image is None:
+            return tk.Button(parent, text=text, command=command, width=10, bg=ACCENT, fg="white", activebackground="#1d4ed8", activeforeground="white", relief="flat", bd=0, font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2")
+        button = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            image=image,
+            compound="center",
+            width=92,
+            height=30,
+            fg="#ffffff",
+            disabledforeground="#94a3b8",
+            activeforeground="#ffffff",
+            bg="#111c31",
+            activebackground="#111c31",
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            cursor="hand2",
+        )
+        button.image = image
+        return button
 
     def _bind_keys(self) -> None:
         self.root.bind("<Key>", self._handle_keypress)
@@ -524,6 +578,16 @@ class BalloonTypingGame:
                 image = tk.PhotoImage(width=x2 - x1, height=y2 - y1)
                 image.tk.call(image, "copy", source, "-from", x1, y1, x2, y2, "-to", 0, 0)
                 self.decoration_images[item_id] = image
+            except tk.TclError:
+                continue
+
+    def _load_ui_images(self) -> None:
+        for name in ("button_blue", "button_green", "button_yellow", "button_red", "star", "star_outline_depth"):
+            file_path = GAME_UI_DIR / f"{name}.png"
+            if not file_path.exists():
+                continue
+            try:
+                self.ui_images[name] = tk.PhotoImage(file=str(file_path))
             except tk.TclError:
                 continue
 
@@ -1639,10 +1703,12 @@ class BalloonTypingGame:
         top = 180
         right = WINDOW_WIDTH - 220
         bottom = WINDOW_HEIGHT - 190
-        self.canvas.create_rectangle(left, top, right, bottom, fill="#ffffff", outline="#60a5fa", width=3)
-        self.canvas.create_text(WINDOW_WIDTH // 2, top + 52, text=title, fill="#1d4ed8", font=("Microsoft YaHei UI", 24, "bold"), width=right - left - 40)
-        self.canvas.create_text(WINDOW_WIDTH // 2, top + 106, text=subtitle, fill=TEXT_MAIN, font=("Microsoft YaHei UI", 12), width=right - left - 40)
-        self.canvas.create_text(WINDOW_WIDTH // 2, top + 148, text=f"玩家：{self.active_player or '未选择'} | 金币：{self.coins}", fill=TEXT_MUTED, font=("Microsoft YaHei UI", 10), width=right - left - 40)
+        self.canvas.create_rectangle(left + 8, top + 10, right + 8, bottom + 10, fill="#0f172a", outline="", stipple="gray50")
+        self.canvas.create_rectangle(left, top, right, bottom, fill="#111c31", outline=PANEL_EDGE, width=4)
+        self.canvas.create_rectangle(left + 12, top + 12, right - 12, top + 36, fill="#21314f", outline="")
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 58, text=title, fill="#fde68a", font=("Microsoft YaHei UI", 24, "bold"), width=right - left - 40)
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 112, text=subtitle, fill="#e0f2fe", font=("Microsoft YaHei UI", 12, "bold"), width=right - left - 40)
+        self.canvas.create_text(WINDOW_WIDTH // 2, top + 152, text=f"玩家：{self.active_player or '未选择'} | 金币：{self.coins}", fill="#93c5fd", font=("Microsoft YaHei UI", 10), width=right - left - 40)
 
     def _draw_pause_overlay(self) -> None:
         self._draw_message("游戏已暂停", "按空格或点击开始继续游戏")
