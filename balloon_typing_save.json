@@ -31,7 +31,7 @@
     "玩家1": {
       "save_name": "玩家1的存档",
       "difficulty": "困难",
-      "coins": 939,
+      "coins": 950,
       "inventory": {
         "cannons_owned": [
           "normal",
@@ -49,12 +49,12 @@
         "consumables": {}
       },
       "progress": {
-        "score": 293,
-        "level": 7,
+        "score": 350,
+        "level": 8,
         "level_score": 0,
         "level_target": 50,
         "lives": 4,
-        "combo": 26,
+        "combo": 58,
         "perfect_level": true
       },
       "best_result": {

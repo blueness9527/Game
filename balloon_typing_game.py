@@ -597,10 +597,11 @@ class BalloonTypingGame:
         if event.keysym == "space":
             self.toggle_pause()
             return
-        if event.char in "123456789":
-            self.use_skill(int(event.char))
+        key = event.char or ""
+        if len(key) == 1 and key in "123456789":
+            self.use_skill(int(key))
             return
-        char = event.char.lower()
+        char = key.lower()
         if char in string.ascii_lowercase:
             self.hit_letter(char)
 
